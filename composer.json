@@ -1,0 +1,24 @@
+{
+    "name": "clarion-app/wizlight-backend",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "ClarionApp\\WizlightBackend\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "Tim Schwartz",
+            "email": "tim@metaverse.systems"
+        }
+    ],
+    "require": {},
+    "extra": {
+        "laravel": {
+            "providers": [
+                "ClarionApp\\WizlightBackend\\WizlightBackendServiceProvider"
+            ]
+        }
+    }
+}
