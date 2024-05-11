@@ -10,6 +10,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 
 class BulbDiscovery implements ShouldQueue
 {
@@ -32,11 +33,29 @@ class BulbDiscovery implements ShouldQueue
 
         $wiz = new Wiz();
         $bulbs = $wiz->discover();
-        foreach ($bulbs as $bulb) {
-            $bulb['local_node_id'] = $local_node_id;
-            $b = Bulb::where('mac', $bulb['mac'])->first() ?? Bulb::create($bulb);
-            $b->last_seen = now();
-            $b->save();
+        foreach($bulbs as $bulb) {
+            $b = Bulb::where('mac', $bulb['mac'])->first();
+            if(!$b)
+            {
+                $bulb['local_node_id'] = $local_node_id;
+                $b = Bulb::create($bulb);
+            }
+
+            $last_seen = BulbLastSeen::where('bulb_id', $b->id)->first();
+            if(!$last_seen)
+            {
+                $last_seen = BulbLastSeen::create([
+                    'id' => (string) \Illuminate\Support\Str::uuid(),
+                    'bulb_id' => $b->id,
+                    'last_seen_at' => now(),
+                ]);
+            }
+            else
+            {
+                $last_seen->update([
+                    'last_seen_at' => now(),
+                ]);
+            }
         }
     }
 }
