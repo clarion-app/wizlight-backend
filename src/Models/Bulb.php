@@ -14,6 +14,7 @@ class Bulb extends Model
         'mac',
         'ip',
         'local_node_id',
+        'last_seen',
     ];
 
     protected $table = 'wizlight_bulbs';

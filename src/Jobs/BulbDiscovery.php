@@ -34,8 +34,9 @@ class BulbDiscovery implements ShouldQueue
         $bulbs = $wiz->discover();
         foreach ($bulbs as $bulb) {
             $bulb['local_node_id'] = $local_node_id;
-            $bulb = Bulb::firstOrCreate($bulb);
-            $bulb->save();
+            $b = Bulb::where('mac', $bulb['mac'])->first() ?? Bulb::create($bulb);
+            $b->last_seen = now();
+            $b->save();
         }
     }
 }

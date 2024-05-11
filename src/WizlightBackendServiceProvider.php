@@ -3,6 +3,8 @@
 namespace ClarionApp\WizlightBackend;
 
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Console\Scheduling\Schedule;
+use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
 use ClarionApp\WizlightBackend\Commands\WizlightDiscover;
 
 class WizlightBackendServiceProvider extends ServiceProvider
@@ -28,5 +30,10 @@ class WizlightBackendServiceProvider extends ServiceProvider
         {
             require __DIR__.'/Routes.php';
         }
+
+        $this->app->booted(function () {
+            $schedule = $this->app->make(Schedule::class);
+            $schedule->job(new BulbDiscovery())->everyTenSeconds();
+        });
     }
 }
