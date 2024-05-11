@@ -15,6 +15,7 @@ return new class extends Migration
             $table->uuid('id')->primary();
             $table->timestamps();
             $table->softDeletes();
+            $table->dateTime('last_seen')->nullable();
             $table->string('mac')->unique();
             $table->string('ip')->nullable();
             $table->uuid('local_node_id');
@@ -26,6 +27,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('bulbs');
+        Schema::dropIfExists('wizlight_bulbs');
     }
 };
