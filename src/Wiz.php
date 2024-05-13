@@ -2,6 +2,7 @@
 namespace ClarionApp\WizlightBackend;
 
 use ClarionApp\WizlightBackend\LightColor;
+use ClarionApp\WizlightBackend\Models\Bulb;
 
 class Wiz
 {
@@ -50,7 +51,21 @@ class Wiz
         $message->params = new \stdClass();
         
         $results = $this->send_udp($message, $ip);
-        print_r($results);
+        foreach($results as $result)
+        {
+            $bulb = $result['result'];
+            $b = Bulb::where('mac', $bulb['mac'])->first();
+            if($b)
+            {
+                $b->state = $bulb['state'];
+                $b->dimming = $bulb['dimming'];
+                if(isset($bulb['r'])) $b->red = $bulb['r'];
+                if(isset($bulb['g'])) $b->green = $bulb['g'];
+                if(isset($bulb['b'])) $b->blue = $bulb['b'];
+                $b->signal = $bulb['rssi'];
+                $b->save();
+            }
+        }
         return $results;
     }
 

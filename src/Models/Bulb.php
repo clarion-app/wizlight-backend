@@ -12,9 +12,19 @@ class Bulb extends Model
     use HasFactory, EloquentMultiChainBridge;
 
     protected $fillable = [
+        'local_node_id',
         'mac',
         'ip',
-        'local_node_id',
+        'name',
+        'model',
+        'group',
+        'dimming',
+        'state',
+        'temperature',
+        'red',
+        'green',
+        'blue',
+        'signal',
     ];
 
     protected $table = 'wizlight_bulbs';

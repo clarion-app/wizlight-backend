@@ -13,7 +13,7 @@ class BulbController extends Controller
      */
     public function index()
     {
-        return Bulb::all();
+        return Bulb::with('last_seen')->get();
     }
 
     /**
