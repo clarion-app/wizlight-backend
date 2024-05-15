@@ -8,11 +8,13 @@ class Wiz
 {
     private $broadcast_address;
     private $wait_time;
+    private $local_ip;
 
     public function __construct($wait_time = 30.0, $broadcast_address = "255.255.255.255")
     {
         $this->broadcast_address = $broadcast_address;
         $this->wait_time = $wait_time;
+        $this->local_ip = $this->get_local_ip();
     }
 
     public function discover() : array
@@ -24,11 +26,11 @@ class Wiz
         $message->params = new \stdClass();
         $message->params->phoneMac = 'AAAAAAAAAAAA';
         $message->params->register = false;
-        $message->params->phoneIp = '1.2.3.4';
+        $message->params->phoneIp = $this->local_ip;
         $message->params->id = 1;
         
         $results = $this->send_udp($message);
-        
+
         foreach($results as $data) 
         {
             $mac = $data['result']['mac'];
@@ -123,5 +125,14 @@ class Wiz
 
         socket_close($socket);
         return $results;
+    }
+
+    public function get_local_ip()
+    {
+        $base_url = config('app.url');
+        // remove protocol and port from url
+        $hostname = parse_url($base_url, PHP_URL_HOST);
+        $ip = gethostbyname($hostname);
+        return $ip;
     }
 }
