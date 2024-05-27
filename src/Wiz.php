@@ -39,6 +39,7 @@ class Wiz
             {
                 // push mac / ip object to $results
                 array_push($bulbs, ['mac' => $mac, 'ip' => $from]);
+                $this->get_pilot_state($from);
                 break;
             }
         }
@@ -59,6 +60,16 @@ class Wiz
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if($b)
             {
+                $update = false;
+                // check if bulb state has changed
+                if($b->state != $bulb['state']) $update = true;
+                if($b->dimming != $bulb['dimming']) $update = true;
+                if($b->red != $bulb['r']) $update = true;
+                if($b->green != $bulb['g']) $update = true;
+                if($b->blue != $bulb['b']) $update = true;
+                //if($b->signal != $bulb['rssi']) $update = true;
+                if(!$update) continue;
+
                 $b->state = $bulb['state'];
                 $b->dimming = $bulb['dimming'];
                 if(isset($bulb['r'])) $b->red = $bulb['r'];

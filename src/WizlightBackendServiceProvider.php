@@ -40,7 +40,7 @@ class WizlightBackendServiceProvider extends ServiceProvider
                 {
                     dispatch(new BulbDiscovery());
                 }
-            })->everyThirtySeconds();
+            })->everyTenSeconds();
         });
     }
 }

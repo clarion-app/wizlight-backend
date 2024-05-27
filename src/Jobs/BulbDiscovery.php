@@ -40,6 +40,10 @@ class BulbDiscovery implements ShouldQueue
                 $bulb['local_node_id'] = $local_node_id;
                 $b = Bulb::create($bulb);
             }
+            else
+            {
+                $b->update($bulb);
+            }
 
             $last_seen = BulbLastSeen::where('bulb_id', $b->id)->first();
             if(!$last_seen)
