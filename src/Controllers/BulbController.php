@@ -45,12 +45,57 @@ class BulbController extends Controller
             return response()->json(['message' => 'Bulb not found'], 404);
         }
 
-        $bulb->state = $request->state['state'] ? true : false;
+        $update = false;
+        $newState = $request->state['state'] ? true : false;
+        if($bulb->state != $newState)
+        {
+            $bulb->state = $newState;
+            $update = true;
+        }
+
+        if($bulb->red != $request->state['red'])
+        {
+            $bulb->red = $request->state['red'];
+            $update = true;
+        }
+
+        if($bulb->green != $request->state['green'])
+        {
+            $bulb->green = $request->state['green'];
+            $update = true;
+        }
+
+        if($bulb->blue != $request->state['blue'])
+        {
+            $bulb->blue = $request->state['blue'];
+            $update = true;
+        }
+
+        if($bulb->dimming != $request->state['dimming'])
+        {
+            $bulb->dimming = $request->state['dimming'];
+            $update = true;
+        }
+        
+        if($bulb->name != $request->state['name'])
+        {
+            $bulb->name = $request->state['name'];
+            $update = true;
+        }
+        
+        if(!$update) return $bulb;
         $bulb->save();
+
+        if(config('clarion.node_id') != $bulb->local_node_id)
+        {
+            // This bulb is not connected to this node, do not try to send commands via UDP.
+            return $bulb;
+        }
 
         $wiz = new Wiz();
         $color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
-        $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], $bulb->state ? 1 : 0);
+//        $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], $bulb->temperature, $bulb->state ? 1 : 0);
+        $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
         return $bulb;
     }
 

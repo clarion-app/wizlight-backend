@@ -63,18 +63,49 @@ class Wiz
                 $update = false;
                 // check if bulb state has changed
                 if($b->state != $bulb['state']) $update = true;
-                if($b->dimming != $bulb['dimming']) $update = true;
-                if($b->red != $bulb['r']) $update = true;
-                if($b->green != $bulb['g']) $update = true;
-                if($b->blue != $bulb['b']) $update = true;
+                if(isset($bulb['dimming']) && $b->dimming != $bulb['dimming']) $update = true;
+
+                if(!isset($bulb['r']))
+                {
+                    $bulb['r'] = 0;
+                }
+                
+                if(!isset($bulb['g'])) 
+                {
+                    $bulb['g'] = 0;
+                }
+                
+                if(!isset($bulb['b']))
+                {
+                    $bulb['b'] = 0;
+                }
+
+                if($b->red != $bulb['r'])
+                {
+                    $b->red = $bulb['r'];
+                    $update = true;
+                }
+                
+                if($b->green != $bulb['g'])
+                {
+                    $b->green = $bulb['g'];
+                    $update = true;
+                }
+
+                if($b->blue != $bulb['b'])
+                {
+                    $b->blue = $bulb['b'];
+                    $update = true;
+                }
+
+                if(isset($bulb['temperature']) && $b->temperature != $bulb['temperature']) $update = true;
                 //if($b->signal != $bulb['rssi']) $update = true;
                 if(!$update) continue;
 
+                \Log::info('Updating bulb: ' . print_r($bulb, true));
+
                 $b->state = $bulb['state'];
-                $b->dimming = $bulb['dimming'];
-                if(isset($bulb['r'])) $b->red = $bulb['r'];
-                if(isset($bulb['g'])) $b->green = $bulb['g'];
-                if(isset($bulb['b'])) $b->blue = $bulb['b'];
+                if(isset($bulb['dimming'])) $b->dimming = $bulb['dimming'];
                 $b->signal = $bulb['rssi'];
                 $b->save();
             }
@@ -82,13 +113,25 @@ class Wiz
         return $results;
     }
 
-    public function set_pilot_state($ip, RGBColor $color, int $dimming, bool $state): array
+    public function set_pilot_state($ip, RGBColor $color, int $dimming, int $temp, bool $state): array
     {
         $results = [];
         $message = null;
         $stateStr = $state ? 'on' : 'off';
 
         [$r, $g, $b] = $color->getValue();
+        /*
+        $message = sprintf(
+            '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"temp":%d,"state":%d}}',
+            $r,
+            $g,
+            $b,
+            $dimming,
+            $temp,
+            $state
+        );
+        */
+
         $message = sprintf(
             '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"state":%d}}',
             $r,
@@ -97,6 +140,7 @@ class Wiz
             $dimming,
             $state
         );
+
 
         $results = $this->send_udp(json_decode($message), $ip);
         return $results;

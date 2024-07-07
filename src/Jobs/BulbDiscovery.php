@@ -38,6 +38,7 @@ class BulbDiscovery implements ShouldQueue
             if(!$b)
             {
                 $bulb['local_node_id'] = $local_node_id;
+                $bulb['name'] = "Unnamed Bulb";
                 $b = Bulb::create($bulb);
             }
             else
