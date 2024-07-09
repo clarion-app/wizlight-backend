@@ -11,24 +11,18 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('wizlight_bulbs', function (Blueprint $table) {
+        Schema::create('wizlight_rooms', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->timestamps();
             $table->softDeletes();
             $table->uuid('local_node_id');
-            $table->uuid('room_id')->nullable();
-            $table->string('mac')->unique();
-            $table->string('ip')->nullable();
-            $table->string('name')->nullable();
-            $table->string('model')->nullable();
-            $table->string('group')->nullable();
+            $table->string('name');
             $table->integer('dimming')->default(100);
             $table->boolean('state')->default(false);
             $table->integer('temperature')->default(2700);
             $table->integer('red')->default(255);
             $table->integer('green')->default(255);
             $table->integer('blue')->default(255);
-            $table->string('signal')->nullable();
         });
     }
 
@@ -37,6 +31,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('wizlight_bulbs');
+        Schema::dropIfExists('wizlight_rooms');
     }
 };
