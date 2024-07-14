@@ -22,7 +22,7 @@ class BulbStatusEvent implements ShouldBroadcastNow
     public function broadcastOn()
     {
         return [
-            new Channel('clarion-apps-wizlight'),
+            new Channel('clarion-app-wizlight'),
         ];
     }
 }
