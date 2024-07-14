@@ -11,6 +11,7 @@ use Illuminate\Queue\SerializesModels;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
+use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 
 class BulbDiscovery implements ShouldQueue
 {
@@ -61,6 +62,8 @@ class BulbDiscovery implements ShouldQueue
                     'last_seen_at' => now(),
                 ]);
             }
+
+            event(new BulbStatusEvent($b));
         }
     }
 }
