@@ -4,7 +4,7 @@ namespace ClarionApp\WizlightBackend\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
-use MetaverseSystems\EloquentMultiChainBridge\EloquentMultiChainBridge;
+use ClarionApp\EloquentMultiChainBridge\EloquentMultiChainBridge;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Models\Bulb;
 

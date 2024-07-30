@@ -12,9 +12,10 @@ use ClarionApp\WizlightBackend\RGBColor;
 class BulbController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Display a list of all bulbs.
+     * @response Bulb[]
      */
-    public function index()
+    public function index(Request $request)
     {
         return Bulb::with('last_seen')->get();
     }
@@ -36,10 +37,30 @@ class BulbController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Change the bulb state.
+     * @param  \Illuminate\Http\Request  $request
+     * @param string $id
+     * @response Bulb
      */
     public function update(Request $request, $id)
     {
+        $rules = [
+            'state' => 'required|array',
+            'state.state' => 'required|boolean',
+            'state.red' => 'required|integer|min:0|max:255',
+            'state.green' => 'required|integer|min:0|max:255',
+            'state.blue' => 'required|integer|min:0|max:255',
+            'state.dimming' => 'required|integer|min:0|max:100',
+            'state.name' => 'required|string',
+        ];
+
+        $validator = Validator::make($request->all(), $rules);
+
+        if ($validator->fails())
+        {
+            return response()->json(['errors' => $validator->errors()], 400);
+        }
+
         $bulb = Bulb::find($id);
         if(!$bulb) {
             return response()->json(['message' => 'Bulb not found'], 404);
@@ -86,16 +107,13 @@ class BulbController extends Controller
         if(!$update) return $bulb;
         $bulb->save();
 
-        if(config('clarion.node_id') != $bulb->local_node_id)
+        if(config('clarion.node_id') == $bulb->local_node_id)
         {
-            // This bulb is not connected to this node, do not try to send commands via UDP.
-            return $bulb;
+            $wiz = new Wiz();
+            $color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
+            $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
         }
 
-        $wiz = new Wiz();
-        $color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
-//        $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], $bulb->temperature, $bulb->state ? 1 : 0);
-        $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
         return $bulb;
     }
 

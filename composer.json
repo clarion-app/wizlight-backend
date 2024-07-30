@@ -20,5 +20,6 @@
                 "ClarionApp\\WizlightBackend\\WizlightBackendServiceProvider"
             ]
         }
-    }
+    },
+    "minimum-stability": "dev"
 }

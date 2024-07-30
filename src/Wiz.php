@@ -40,6 +40,8 @@ class Wiz
                 // push mac / ip object to $results
                 array_push($bulbs, ['mac' => $mac, 'ip' => $from]);
                 $this->get_pilot_state($from);
+                $this->get_user_config($from);
+                $this->get_system_config($from);
                 break;
             }
         }
@@ -47,15 +49,50 @@ class Wiz
         return $bulbs;
     }
 
-    public function get_pilot_state($ip) : array
+    public function get_user_config($ip) : array
     {
         $message = new \stdClass();
-        $message->method = 'getPilot';
+        $message->method = 'getUserConfig';
         $message->params = new \stdClass();
-        
         $results = $this->send_udp($message, $ip);
+        \Log::info('getUserConfig results: ' . print_r($results, true));
+        return $results;
+    }
+
+    public function get_system_config($ip) : array
+    {
+        $message = new \stdClass();
+        $message->method = 'getSystemConfig';
+        $message->params = new \stdClass();
+        $results = $this->send_udp($message, $ip);
+        \Log::info('getSystemConfig results: ' . print_r($results, true));
+
+        $data = $results[0]['result'];
+        $bulb = Bulb::where('mac', $data['mac'])->first();
+        if(!$bulb) return [];
+
+        $update = false;
+        if($bulb->model != $data['moduleName'])
+        {
+            $bulb->model = $data['moduleName'];
+            $update = true;
+        }
+
+        if($update) $bulb->save();
+
+        return $results;
+    }
+
+    public function get_pilot_state($ip) : array
+    {
+        $pilot = new \stdClass();
+        $pilot->method = 'getPilot';
+        $pilot->params = new \stdClass();
+        
+        $results = $this->send_udp($pilot, $ip);
         foreach($results as $result)
         {
+            \Log::info('getPilot result: ' . print_r($result, true));
             $bulb = $result['result'];
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if($b)
