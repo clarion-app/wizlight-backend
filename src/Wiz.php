@@ -55,7 +55,7 @@ class Wiz
         $message->method = 'getUserConfig';
         $message->params = new \stdClass();
         $results = $this->send_udp($message, $ip);
-        \Log::info('getUserConfig results: ' . print_r($results, true));
+        //\Log::info('getUserConfig results: ' . print_r($results, true));
         return $results;
     }
 
@@ -65,7 +65,7 @@ class Wiz
         $message->method = 'getSystemConfig';
         $message->params = new \stdClass();
         $results = $this->send_udp($message, $ip);
-        \Log::info('getSystemConfig results: ' . print_r($results, true));
+        //\Log::info('getSystemConfig results: ' . print_r($results, true));
 
         $data = $results[0]['result'];
         $bulb = Bulb::where('mac', $data['mac'])->first();
@@ -92,7 +92,7 @@ class Wiz
         $results = $this->send_udp($pilot, $ip);
         foreach($results as $result)
         {
-            \Log::info('getPilot result: ' . print_r($result, true));
+            //\Log::info('getPilot result: ' . print_r($result, true));
             $bulb = $result['result'];
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if($b)
@@ -139,7 +139,7 @@ class Wiz
                 //if($b->signal != $bulb['rssi']) $update = true;
                 if(!$update) continue;
 
-                \Log::info('Updating bulb: ' . print_r($bulb, true));
+                //\Log::info('Updating bulb: ' . print_r($bulb, true));
 
                 $b->state = $bulb['state'];
                 if(isset($bulb['dimming'])) $b->dimming = $bulb['dimming'];
@@ -156,28 +156,33 @@ class Wiz
         $message = null;
         $stateStr = $state ? 'on' : 'off';
 
-        [$r, $g, $b] = $color->getValue();
-        /*
-        $message = sprintf(
-            '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"temp":%d,"state":%d}}',
-            $r,
-            $g,
-            $b,
-            $dimming,
-            $temp,
-            $state
-        );
-        */
+        $message = "{}";
 
-        $message = sprintf(
-            '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"state":%d}}',
-            $r,
-            $g,
-            $b,
-            $dimming,
-            $state
-        );
-
+        if(!$temp)
+        {
+            [$r, $g, $b] = $color->getValue();
+        
+            $message = sprintf(
+                '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"state":%d}}',
+                $r,
+                $g,
+                $b,
+                $dimming,
+                $state
+            );
+        }
+        else
+        {
+            $message = sprintf(
+                '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"temp":%d,"state":%d}}',
+                "0",
+                "0",
+                "0",
+                $dimming,
+                $temp,
+                $state
+            );
+        }
 
         $results = $this->send_udp(json_decode($message), $ip);
         return $results;

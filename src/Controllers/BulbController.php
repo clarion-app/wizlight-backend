@@ -7,6 +7,8 @@ use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\RGBColor;
+use ClarionApp\WizlightBackend\TemperatureColor;
+use Validator;
 
 
 class BulbController extends Controller
@@ -103,6 +105,12 @@ class BulbController extends Controller
             $bulb->name = $request->state['name'];
             $update = true;
         }
+
+        if($bulb->temperature != $request->state['temperature'])
+        {
+            $bulb->temperature = $request->state['temperature'];
+            $update = true;
+        }
         
         if(!$update) return $bulb;
         $bulb->save();
@@ -110,8 +118,19 @@ class BulbController extends Controller
         if(config('clarion.node_id') == $bulb->local_node_id)
         {
             $wiz = new Wiz();
-            $color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
-            $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
+            $color = "";
+            if($bulb->red == 0 && $bulb->green == 0 && $bulb->blue == 0)
+            {
+                $color = (new TemperatureColor($bulb->temperature))->getValue();
+                $wiz->set_pilot_state($bulb->ip, new RGBColor(0, 0, 0), $request->state['dimming'], $color, $bulb->state ? 1 : 0);
+            }
+            else
+            {
+                $color = new RGBColor($bulb->red, $bulb->green, $bulb->blue);
+                $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
+            }
+            //$color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
+            
         }
 
         return $bulb;
