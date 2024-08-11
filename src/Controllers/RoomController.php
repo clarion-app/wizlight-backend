@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\Log;
 class RoomController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Display a listing of rooms with their bulbs.
      */
     public function index()
     {
@@ -22,11 +22,13 @@ class RoomController extends Controller
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Create a new room to contain bulbs.
      */
     public function store(Request $request)
     {
-        Log::info(print_r($request->all(), true));
+        $validated = $request->validate([
+            'name' => 'required|string',
+        ]);
         $room = new Room();
         $room->name = $request->name;
         $room->local_node_id = config('clarion.node_id');
@@ -35,7 +37,7 @@ class RoomController extends Controller
     }
 
     /**
-     * Display the specified resource.
+     * Display the specified room with its bulbs.
      */
     public function show(Room $room)
     {
@@ -43,10 +45,14 @@ class RoomController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Update the specified room.
      */
     public function update(Request $request, $id)
     {
+        $validated = $request->validate([
+            'name' => 'required|string',
+        ]);
+        
         $room = Room::find($id);
         if(!$room) {
             return response()->json(['message' => 'Room not found'], 404);
@@ -68,7 +74,7 @@ class RoomController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Remove the specified room.
      */
     public function destroy($id)
     {

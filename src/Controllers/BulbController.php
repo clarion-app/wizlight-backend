@@ -9,6 +9,7 @@ use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\RGBColor;
 use ClarionApp\WizlightBackend\TemperatureColor;
 use Validator;
+use Illuminate\Support\Facades\Log;
 
 
 class BulbController extends Controller
@@ -46,22 +47,15 @@ class BulbController extends Controller
      */
     public function update(Request $request, $id)
     {
-        $rules = [
-            'state' => 'required|array',
-            'state.state' => 'required|boolean',
-            'state.red' => 'required|integer|min:0|max:255',
-            'state.green' => 'required|integer|min:0|max:255',
-            'state.blue' => 'required|integer|min:0|max:255',
-            'state.dimming' => 'required|integer|min:0|max:100',
-            'state.name' => 'required|string',
-        ];
-
-        $validator = Validator::make($request->all(), $rules);
-
-        if ($validator->fails())
-        {
-            return response()->json(['errors' => $validator->errors()], 400);
-        }
+        $validated = $request->validate([
+            'state' => 'required|boolean',
+            'red' => 'required|integer|min:0|max:255',
+            'green' => 'required|integer|min:0|max:255',
+            'blue' => 'required|integer|min:0|max:255',
+            'temperature' => 'required|integer|min:0|max:6500',
+            'dimming' => 'required|integer|min:0|max:100',
+            'name' => 'required|string',
+        ]);
 
         $bulb = Bulb::find($id);
         if(!$bulb) {
@@ -69,46 +63,46 @@ class BulbController extends Controller
         }
 
         $update = false;
-        $newState = $request->state['state'] ? true : false;
+        $newState = $request->state ? true : false;
         if($bulb->state != $newState)
         {
             $bulb->state = $newState;
             $update = true;
         }
 
-        if($bulb->red != $request->state['red'])
+        if($bulb->red != $request->red)
         {
-            $bulb->red = $request->state['red'];
+            $bulb->red = $request->red;
             $update = true;
         }
 
-        if($bulb->green != $request->state['green'])
+        if($bulb->green != $request->green)
         {
-            $bulb->green = $request->state['green'];
+            $bulb->green = $request->green;
             $update = true;
         }
 
-        if($bulb->blue != $request->state['blue'])
+        if($bulb->blue != $request->blue)
         {
-            $bulb->blue = $request->state['blue'];
+            $bulb->blue = $request->blue;
             $update = true;
         }
 
-        if($bulb->dimming != $request->state['dimming'])
+        if($bulb->dimming != $request->dimming)
         {
-            $bulb->dimming = $request->state['dimming'];
+            $bulb->dimming = $request->dimming;
             $update = true;
         }
         
-        if($bulb->name != $request->state['name'])
+        if($bulb->name != $request->name)
         {
-            $bulb->name = $request->state['name'];
+            $bulb->name = $request->name;
             $update = true;
         }
 
-        if($bulb->temperature != $request->state['temperature'])
+        if($bulb->temperature != $request->temperature)
         {
-            $bulb->temperature = $request->state['temperature'];
+            $bulb->temperature = $request->temperature;
             $update = true;
         }
         
@@ -122,12 +116,12 @@ class BulbController extends Controller
             if($bulb->red == 0 && $bulb->green == 0 && $bulb->blue == 0)
             {
                 $color = (new TemperatureColor($bulb->temperature))->getValue();
-                $wiz->set_pilot_state($bulb->ip, new RGBColor(0, 0, 0), $request->state['dimming'], $color, $bulb->state ? 1 : 0);
+                $wiz->set_pilot_state($bulb->ip, new RGBColor(0, 0, 0), $request->dimming, $color, $bulb->state ? 1 : 0);
             }
             else
             {
                 $color = new RGBColor($bulb->red, $bulb->green, $bulb->blue);
-                $wiz->set_pilot_state($bulb->ip, $color, $request->state['dimming'], 0, $bulb->state ? 1 : 0);
+                $wiz->set_pilot_state($bulb->ip, $color, $request->dimming, 0, $bulb->state ? 1 : 0);
             }
             //$color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
             
