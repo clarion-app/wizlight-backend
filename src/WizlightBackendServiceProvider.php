@@ -5,16 +5,19 @@ namespace ClarionApp\WizlightBackend;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Queue;
+use ClarionApp\Backend\ClarionPackageServiceProvider;
 use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
 use ClarionApp\WizlightBackend\Commands\WizlightDiscover;
 
-class WizlightBackendServiceProvider extends ServiceProvider
+class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
 {
     /**
      * Register services.
      */
     public function register(): void
     {
+        parent::register();
+
         $this->commands([
             WizlightDiscover::class,
         ]);
@@ -25,6 +28,8 @@ class WizlightBackendServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        parent::boot();
+
         $this->loadMigrationsFrom(__DIR__.'/Migrations');
 
         if(!$this->app->routesAreCached())

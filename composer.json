@@ -1,5 +1,6 @@
 {
     "name": "clarion-app/wizlight-backend",
+    "description": "Provides operations to control Wiz light bulbs.",
     "type": "library",
     "license": "MIT",
     "autoload": {
@@ -19,6 +20,10 @@
             "providers": [
                 "ClarionApp\\WizlightBackend\\WizlightBackendServiceProvider"
             ]
+        },
+        "clarion": {
+            "app-name": "clarion-app/wizlights",
+            "description": "Provides operations to control Wiz light bulbs."
         }
     },
     "minimum-stability": "dev"
