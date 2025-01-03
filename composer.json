@@ -22,7 +22,7 @@
             ]
         },
         "clarion": {
-            "app-name": "clarion-app/wizlights",
+            "app-name": "@clarion-app/wizlights",
             "description": "Provides operations to control Wiz light bulbs."
         }
     },
