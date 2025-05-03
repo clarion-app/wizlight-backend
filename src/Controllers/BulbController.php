@@ -106,6 +106,12 @@ class BulbController extends Controller
             $update = true;
         }
         
+        if($bulb->room_id != $request->room_id)
+        {
+            $bulb->room_id = $request->room_id;
+            $update = true;
+        }
+
         if(!$update) return $bulb;
         $bulb->save();
 
@@ -133,8 +139,16 @@ class BulbController extends Controller
     /**
      * Remove the specified resource from storage.
      */
-    public function destroy(Bulb $bulb)
+    public function destroy($id)
     {
-        //
+        $bulb = Bulb::find($id);
+        if(!$bulb) {
+            return response()->json(['message' => 'Bulb not found'], 404);
+        }
+        if($bulb->delete()) {
+            return response()->json(['message' => 'Bulb deleted successfully'], 200);
+        } else {
+            return response()->json(['message' => 'Failed to delete bulb'], 500);
+        }
     }
 }
