@@ -23,7 +23,10 @@
         },
         "clarion": {
             "app-name": "@clarion-app/wizlights",
-            "description": "Provides operations to control Wiz light bulbs."
+            "description": "Provides operations to control Wiz light bulbs.",
+            "customPrompts": {
+                "chooseOperations": "To adjust the lighting of a room, first use room.index to retrieve a list of rooms with room IDs and names. Find the ID that matches the requested room name. Then, use room.update to modify the state of the room."
+            }
         }
     },
     "minimum-stability": "dev"

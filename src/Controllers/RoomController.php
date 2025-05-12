@@ -39,8 +39,13 @@ class RoomController extends Controller
     /**
      * Display the specified room with its bulbs.
      */
-    public function show(Room $room)
+    public function show($id)
     {
+        $room = Room::find($id);
+        if(!$room) {
+            return response()->json(['message' => 'Room not found'], 404);
+        }
+        
         return $room->load('bulbs');
     }
 
@@ -50,7 +55,7 @@ class RoomController extends Controller
     public function update(Request $request, $id)
     {
         $validated = $request->validate([
-            'name' => 'required|string',
+            'name' => 'nullable|string',
         ]);
         
         $room = Room::find($id);
@@ -59,7 +64,7 @@ class RoomController extends Controller
         }
 
         $update = false;
-        if($room->name != $request->name)
+        if($request->name && $room->name != $request->name)
         {
             $room->name = $request->name;
             $update = true;

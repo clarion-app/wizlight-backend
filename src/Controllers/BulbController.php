@@ -10,6 +10,7 @@ use ClarionApp\WizlightBackend\RGBColor;
 use ClarionApp\WizlightBackend\TemperatureColor;
 use Validator;
 use Illuminate\Support\Facades\Log;
+use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 
 
 class BulbController extends Controller
@@ -48,13 +49,13 @@ class BulbController extends Controller
     public function update(Request $request, $id)
     {
         $validated = $request->validate([
-            'state' => 'required|boolean',
-            'red' => 'required|integer|min:0|max:255',
-            'green' => 'required|integer|min:0|max:255',
-            'blue' => 'required|integer|min:0|max:255',
-            'temperature' => 'required|integer|min:0|max:6500',
-            'dimming' => 'required|integer|min:0|max:100',
-            'name' => 'required|string',
+            'state' => 'nullable|boolean',
+            'red' => 'nullable|integer|min:0|max:255',
+            'green' => 'nullable|integer|min:0|max:255',
+            'blue' => 'nullable|integer|min:0|max:255',
+            'temperature' => 'nullable|integer|min:0|max:6500',
+            'dimming' => 'nullable|integer|min:0|max:100',
+            'name' => 'nullable|string',
         ]);
 
         $bulb = Bulb::find($id);
@@ -64,49 +65,62 @@ class BulbController extends Controller
 
         $update = false;
         $newState = $request->state ? true : false;
-        if($bulb->state != $newState)
+        if(isset($request->state) && $bulb->state != $newState)
         {
             $bulb->state = $newState;
             $update = true;
         }
 
-        if($bulb->red != $request->red)
+        if(isset($request->red) && $bulb->red != $request->red)
         {
             $bulb->red = $request->red;
             $update = true;
         }
 
-        if($bulb->green != $request->green)
+        if(isset($request->green) && $bulb->green != $request->green)
         {
             $bulb->green = $request->green;
             $update = true;
         }
 
-        if($bulb->blue != $request->blue)
+        if(isset($request->blue) && $bulb->blue != $request->blue)
         {
             $bulb->blue = $request->blue;
             $update = true;
         }
 
-        if($bulb->dimming != $request->dimming)
+        if($request->dimming && $bulb->dimming != $request->dimming)
         {
             $bulb->dimming = $request->dimming;
             $update = true;
         }
+        else
+        {
+            $bulb->dimming = 100;
+            $update = true;
+        }
         
-        if($bulb->name != $request->name)
+        if($request->name && $bulb->name != $request->name)
         {
             $bulb->name = $request->name;
             $update = true;
         }
 
-        if($bulb->temperature != $request->temperature)
+        if(isset($request->temperature) && $bulb->temperature != $request->temperature)
+        {
+            $bulb->temperature = $request->temperature;
+            $update = true;
+        }
+        {
+            $bulb->temperature = $request->temperature;
+            $update = true;
+        }
         {
             $bulb->temperature = $request->temperature;
             $update = true;
         }
         
-        if($bulb->room_id != $request->room_id)
+        if($request->room_id && $bulb->room_id != $request->room_id)
         {
             $bulb->room_id = $request->room_id;
             $update = true;
@@ -133,6 +147,8 @@ class BulbController extends Controller
             
         }
 
+        event(new BulbStatusEvent($bulb));
+
         return $bulb;
     }
 
@@ -145,7 +161,7 @@ class BulbController extends Controller
         if(!$bulb) {
             return response()->json(['message' => 'Bulb not found'], 404);
         }
-        if($bulb->delete()) {
+        if($bulb->forceDelete()) {
             return response()->json(['message' => 'Bulb deleted successfully'], 200);
         } else {
             return response()->json(['message' => 'Failed to delete bulb'], 500);
