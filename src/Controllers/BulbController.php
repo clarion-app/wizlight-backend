@@ -111,14 +111,6 @@ class BulbController extends Controller
             $bulb->temperature = $request->temperature;
             $update = true;
         }
-        {
-            $bulb->temperature = $request->temperature;
-            $update = true;
-        }
-        {
-            $bulb->temperature = $request->temperature;
-            $update = true;
-        }
         
         if($request->room_id && $bulb->room_id != $request->room_id)
         {
