@@ -56,6 +56,8 @@ class RoomController extends Controller
      */
     public function update(Request $request, $id)
     {
+        
+
         $validated = $request->validate([
             'state' => 'nullable|boolean',
             'red' => 'nullable|integer|min:0|max:255',
@@ -65,7 +67,7 @@ class RoomController extends Controller
             'dimming' => 'nullable|integer|min:0|max:100',
             'name' => 'nullable|string',
         ]);
-        
+
         $room = Room::with('bulbs')->find($id);
         if(!$room) {
             return response()->json(['message' => 'Room not found'], 404);
@@ -75,6 +77,47 @@ class RoomController extends Controller
         if($request->name && $room->name != $request->name)
         {
             $room->name = $request->name;
+            $update = true;
+        }
+
+        if(isset($request->state) && $room->state != $request->state)
+        {
+            $room->state = $request->state ? true : false;
+            $update = true;
+        }
+
+        if(isset($request->red) && $room->red != $request->red)
+        {
+            $room->red = $request->red;
+            $update = true;
+        }
+
+        if(isset($request->green) && $room->green != $request->green)
+        {
+            $room->green = $request->green;
+            $update = true;
+        }
+
+        if(isset($request->blue) && $room->blue != $request->blue)
+        {
+            $room->blue = $request->blue;
+            $update = true;
+        }
+
+        if(isset($request->temperature) && $room->temperature != $request->temperature)
+        {
+            $room->temperature = $request->temperature;
+            $update = true;
+        }
+
+        if(isset($request->dimming) && $room->dimming != $request->dimming)
+        {
+            $room->dimming = $request->dimming;
+            $update = true;
+        }
+        else
+        {
+            $room->dimming = 100; // Default dimming value
             $update = true;
         }
 
@@ -120,29 +163,35 @@ class RoomController extends Controller
 
         if($bulbUpdate)
         {
+            $ips = [];
             foreach($room->bulbs as $bulb)
             {
-                $bulb->save();
-                if(config('clarion.node_id') == $bulb->local_node_id)
+                if(!in_array($bulb->ip, $ips))
                 {
-                    $wiz = new Wiz();
-                    $color = "";
-                    if($bulb->red == 0 && $bulb->green == 0 && $bulb->blue == 0)
-                    {
-                        $color = (new TemperatureColor($bulb->temperature))->getValue();
-                        $wiz->set_pilot_state($bulb->ip, new RGBColor(0, 0, 0), $request->dimming, $color, $bulb->state ? 1 : 0);
-                    }
-                    else
-                    {
-                        $color = new RGBColor($bulb->red, $bulb->green, $bulb->blue);
-                        $wiz->set_pilot_state($bulb->ip, $color, $request->dimming, 0, $bulb->state ? 1 : 0);
-                    }
-                    //$color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
-                    
+                    $ips[] = $bulb->ip;
                 }
+                $bulb->save();
+            }
+
+            if(config('clarion.node_id') == $bulb->local_node_id)
+            {
+                $wiz = new Wiz();
+                $color = "";
+                if($bulb->red == 0 && $bulb->green == 0 && $bulb->blue == 0)
+                {
+                    $color = (new TemperatureColor($bulb->temperature))->getValue();
+                    $wiz->set_pilot_state($ips, new RGBColor(0, 0, 0), $request->dimming, $color, $bulb->state ? 1 : 0);
+                }
+                else
+                {
+                    $color = new RGBColor($bulb->red, $bulb->green, $bulb->blue);
+                    $wiz->set_pilot_state($ips, $color, $request->dimming, 0, $bulb->state ? 1 : 0);
+                }
+                //$color = new RGBColor($request->state['red'], $request->state['green'], $request->state['blue']);
+                
+            }
 
                 event(new BulbStatusEvent($bulb));
-            }
         }
 
         return $room;

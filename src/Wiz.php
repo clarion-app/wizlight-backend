@@ -65,6 +65,7 @@ class Wiz
         $message->method = 'getSystemConfig';
         $message->params = new \stdClass();
         $results = $this->send_udp($message, $ip);
+        if(!$results) return [];
         //\Log::info('getSystemConfig results: ' . print_r($results, true));
 
         $data = $results[0]['result'];
@@ -150,7 +151,7 @@ class Wiz
         return $results;
     }
 
-    public function set_pilot_state($ip, RGBColor $color, int $dimming, int $temp, bool $state): array
+    public function set_pilot_state($ips, RGBColor $color, int $dimming, int $temp, bool $state): array
     {
         $results = [];
         $message = null;
@@ -184,40 +185,44 @@ class Wiz
             );
         }
 
-        $results = $this->send_udp(json_decode($message), $ip);
+        $results = $this->send_udp(json_decode($message), $ips);
         return $results;
     }
 
-    public function send_udp($message, $ip = null) : array
+        public function send_udp($message, $ips = null) : array
     {
-        $ip = $ip ? $ip : $this->broadcast_address;
+        // normalize to array of targets
+        $targets = $ips
+            ? (is_array($ips) ? $ips : [$ips])
+            : [$this->broadcast_address];
+
         $results = [];
+        $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        $payload = json_encode($message);
 
-        $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);;
-        $m = json_encode($message);
-        
         socket_set_option($socket, SOL_SOCKET, SO_BROADCAST, 1);
-        socket_sendto($socket, $m, strlen($m), 0, $ip, 38899);
 
-        socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, array('sec' => 1, 'usec' => 0));
+        // send the same payload to each IP
+        foreach ($targets as $destIp) {
+            socket_sendto($socket, $payload, strlen($payload), 0, $destIp, 38899);
+        }
 
+        socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, ['sec'=>1, 'usec'=>0]);
         $start_time = microtime(true);
+
+        // <-- $SELECTION_PLACEHOLDER$ -->
         while (true) {
             $buf = '';
             $from = '';
             $port = 0;
             $bytes = @socket_recvfrom($socket, $buf, 1024, 0, $from, $port);
-            if ($bytes === false) {
-                break;
-            }
+            if ($bytes === false) break;
             if ($bytes > 0) {
                 $data = json_decode($buf, true);
                 $data['from'] = $from;
-                array_push($results, $data);
+                $results[] = $data;
             }
-            if (microtime(true) - $start_time > $this->wait_time) {
-                break;
-            }
+            if (microtime(true) - $start_time > $this->wait_time) break;
         }
 
         socket_close($socket);
