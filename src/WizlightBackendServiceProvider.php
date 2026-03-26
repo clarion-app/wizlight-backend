@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Queue;
 use ClarionApp\Backend\ClarionPackageServiceProvider;
 use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
 use ClarionApp\WizlightBackend\Commands\WizlightDiscover;
+use Illuminate\Support\Facades\Log;
 
 class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
 {
@@ -40,12 +41,8 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
         $this->app->booted(function () {
             $schedule = $this->app->make(Schedule::class);
             $schedule->call(function() {
-                $result = shell_exec('pgrep -c -f "php artisan queue:work --queue=default"');
-                if($result == "2\n")
-                {
-                    dispatch(new BulbDiscovery());
-                }
-            })->everyFiveSeconds();
+                BulbDiscovery::dispatchSync();
+            })->everyMinute();
         });
     }
 }

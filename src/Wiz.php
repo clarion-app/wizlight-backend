@@ -3,6 +3,7 @@ namespace ClarionApp\WizlightBackend;
 
 use ClarionApp\WizlightBackend\LightColor;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use Illuminate\Support\Facades\Log;
 
 class Wiz
 {
@@ -30,6 +31,7 @@ class Wiz
         $message->params->id = 1;
         
         $results = $this->send_udp($message);
+        // Log::info('Discovery results: ' . print_r($results, true));
 
         foreach($results as $data) 
         {
@@ -235,6 +237,7 @@ class Wiz
         // remove protocol and port from url
         $hostname = parse_url($base_url, PHP_URL_HOST);
         $ip = gethostbyname($hostname);
+        Log::info("Local IP address: " . $ip);
         return $ip;
     }
 }

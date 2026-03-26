@@ -12,6 +12,7 @@ use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
+use Illuminate\Support\Facades\Log;
 
 class BulbDiscovery implements ShouldQueue
 {
@@ -30,11 +31,13 @@ class BulbDiscovery implements ShouldQueue
      */
     public function handle(): void
     {
+        Log::info("Starting bulb discovery...");
         $local_node_id = config('clarion.node_id');
 
         $wiz = new Wiz();
         $bulbs = $wiz->discover();
         foreach($bulbs as $bulb) {
+            Log::info("Found bulb: ".$bulb['mac']." at ".$bulb['ip']);
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if(!$b)
             {
