@@ -237,7 +237,7 @@ class Wiz
         // remove protocol and port from url
         $hostname = parse_url($base_url, PHP_URL_HOST);
         $ip = gethostbyname($hostname);
-        Log::info("Local IP address: " . $ip);
+        // \Log::info("Local IP address: " . $ip);
         return $ip;
     }
 }

@@ -31,13 +31,13 @@ class BulbDiscovery implements ShouldQueue
      */
     public function handle(): void
     {
-        Log::info("Starting bulb discovery...");
+        //Log::info("Starting bulb discovery...");
         $local_node_id = config('clarion.node_id');
 
         $wiz = new Wiz();
         $bulbs = $wiz->discover();
         foreach($bulbs as $bulb) {
-            Log::info("Found bulb: ".$bulb['mac']." at ".$bulb['ip']);
+            //Log::info("Found bulb: ".$bulb['mac']." at ".$bulb['ip']);
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if(!$b)
             {
