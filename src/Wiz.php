@@ -3,6 +3,7 @@ namespace ClarionApp\WizlightBackend;
 
 use ClarionApp\WizlightBackend\LightColor;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Validation\IpValidator;
 use Illuminate\Support\Facades\Log;
 
 class Wiz
@@ -10,11 +11,15 @@ class Wiz
     private $broadcast_address;
     private $wait_time;
     private $local_ip;
+    private $phone_mac;
+    private $udp_port;
 
-    public function __construct($wait_time = 30.0, $broadcast_address = "255.255.255.255")
+    public function __construct($wait_time = null, $broadcast_address = null)
     {
-        $this->broadcast_address = $broadcast_address;
-        $this->wait_time = $wait_time;
+        $this->broadcast_address = $broadcast_address ?? config('wizlight.broadcast_address', '255.255.255.255');
+        $this->wait_time = $wait_time ?? config('wizlight.udp_wait_time', 30.0);
+        $this->phone_mac = config('wizlight.phone_mac', 'AAAAAAAAAAAA');
+        $this->udp_port = config('wizlight.udp_port', 38899);
         $this->local_ip = $this->get_local_ip();
     }
 
@@ -25,7 +30,7 @@ class Wiz
         $message = new \stdClass();
         $message->method = 'registration';
         $message->params = new \stdClass();
-        $message->params->phoneMac = 'AAAAAAAAAAAA';
+        $message->params->phoneMac = $this->phone_mac;
         $message->params->register = false;
         $message->params->phoneIp = $this->local_ip;
         $message->params->id = 1;
@@ -44,7 +49,6 @@ class Wiz
                 $this->get_pilot_state($from);
                 $this->get_user_config($from);
                 $this->get_system_config($from);
-                break;
             }
         }
 
@@ -178,9 +182,9 @@ class Wiz
         {
             $message = sprintf(
                 '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"temp":%d,"state":%d}}',
-                "0",
-                "0",
-                "0",
+                0,
+                0,
+                0,
                 $dimming,
                 $temp,
                 $state
@@ -206,7 +210,11 @@ class Wiz
 
         // send the same payload to each IP
         foreach ($targets as $destIp) {
-            socket_sendto($socket, $payload, strlen($payload), 0, $destIp, 38899);
+            if ($destIp !== $this->broadcast_address && !IpValidator::isPrivateIp($destIp)) {
+                Log::warning("Skipping non-private IP in send_udp: {$destIp}");
+                continue;
+            }
+            socket_sendto($socket, $payload, strlen($payload), 0, $destIp, $this->udp_port);
         }
 
         socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, ['sec'=>1, 'usec'=>0]);

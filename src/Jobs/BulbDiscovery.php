@@ -12,6 +12,7 @@ use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
+use ClarionApp\WizlightBackend\Validation\IpValidator;
 use Illuminate\Support\Facades\Log;
 
 class BulbDiscovery implements ShouldQueue
@@ -37,18 +38,19 @@ class BulbDiscovery implements ShouldQueue
         $wiz = new Wiz();
         $bulbs = $wiz->discover();
         foreach($bulbs as $bulb) {
-            //Log::info("Found bulb: ".$bulb['mac']." at ".$bulb['ip']);
-            $b = Bulb::where('mac', $bulb['mac'])->first();
-            if(!$b)
-            {
-                $bulb['local_node_id'] = $local_node_id;
-                $bulb['name'] = "Unnamed Bulb";
-                $b = Bulb::create($bulb);
+            if (!IpValidator::isPrivateIp($bulb['ip'])) {
+                Log::warning("Discarding discovery response with non-private IP: {$bulb['ip']}");
+                continue;
             }
-            else
-            {
-                $b->update($bulb);
-            }
+
+            $b = Bulb::updateOrCreate(
+                ['mac' => $bulb['mac']],
+                [
+                    'ip' => $bulb['ip'],
+                    'local_node_id' => $local_node_id,
+                    'name' => Bulb::where('mac', $bulb['mac'])->value('name') ?? 'Unnamed Bulb',
+                ]
+            );
 
             $last_seen = BulbLastSeen::where('bulb_id', $b->id)->first();
             if(!$last_seen)

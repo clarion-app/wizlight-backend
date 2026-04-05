@@ -14,6 +14,13 @@ class Room extends Model
 
     protected $fillable = [
         'name',
+        'dimming',
+        'state',
+        'temperature',
+        'red',
+        'green',
+        'blue',
+        'local_node_id',
     ];
 
     protected $table = 'wizlight_rooms';

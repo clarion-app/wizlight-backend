@@ -25,6 +25,7 @@ class Bulb extends Model
         'green',
         'blue',
         'signal',
+        'room_id',
     ];
 
     protected $table = 'wizlight_bulbs';

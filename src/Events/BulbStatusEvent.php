@@ -5,7 +5,7 @@ namespace ClarionApp\WizlightBackend\Events;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 
 class BulbStatusEvent implements ShouldBroadcastNow
@@ -22,7 +22,7 @@ class BulbStatusEvent implements ShouldBroadcastNow
     public function broadcastOn()
     {
         return [
-            new Channel('clarion-app-wizlights'),
+            new PrivateChannel('clarion-app-wizlights'),
         ];
     }
 }

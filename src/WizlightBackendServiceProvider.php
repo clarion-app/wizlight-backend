@@ -19,6 +19,8 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
     {
         parent::register();
 
+        $this->mergeConfigFrom(__DIR__.'/../config/wizlight.php', 'wizlight');
+
         $this->commands([
             WizlightDiscover::class,
         ]);
@@ -32,6 +34,10 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
         parent::boot();
 
         $this->loadMigrationsFrom(__DIR__.'/Migrations');
+
+        $this->publishes([
+            __DIR__.'/../config/wizlight.php' => config_path('wizlight.php'),
+        ], 'clarion-config');
 
         if(!$this->app->routesAreCached())
         {
