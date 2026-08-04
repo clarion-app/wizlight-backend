@@ -3,48 +3,49 @@ namespace ClarionApp\WizlightBackend;
 
 use ClarionApp\WizlightBackend\LightColor;
 use ClarionApp\WizlightBackend\Models\Bulb;
-use ClarionApp\WizlightBackend\Validation\IpValidator;
-use Illuminate\Support\Facades\Log;
+use ClarionApp\WizlightBackend\Transport\SocketUdpTransport;
+use ClarionApp\WizlightBackend\Transport\UdpTransport;
 
 class Wiz
 {
-    private $broadcast_address;
-    private $wait_time;
-    private $local_ip;
-    private $phone_mac;
-    private $udp_port;
+    private string $broadcastAddress;
+    private float $waitTime;
+    private string $localIp;
+    private string $phoneMac;
+    private int $udpPort;
+    private UdpTransport $transport;
 
-    public function __construct($wait_time = null, $broadcast_address = null)
-    {
-        $this->broadcast_address = $broadcast_address ?? config('wizlight.broadcast_address', '255.255.255.255');
-        $this->wait_time = $wait_time ?? config('wizlight.udp_wait_time', 30.0);
-        $this->phone_mac = config('wizlight.phone_mac', 'AAAAAAAAAAAA');
-        $this->udp_port = config('wizlight.udp_port', 38899);
-        $this->local_ip = $this->get_local_ip();
+    public function __construct(
+        ?float $wait_time = null,
+        ?string $broadcast_address = null,
+        ?UdpTransport $transport = null
+    ) {
+        $this->broadcastAddress = $broadcast_address ?? config('wizlight.broadcast_address', '255.255.255.255');
+        $this->waitTime = $wait_time ?? config('wizlight.udp_wait_time', 30.0);
+        $this->phoneMac = config('wizlight.phone_mac', 'AAAAAAAAAAAA');
+        $this->udpPort = config('wizlight.udp_port', 38899);
+        $this->localIp = $this->get_local_ip();
+        $this->transport = $transport ?? new SocketUdpTransport($this->broadcastAddress, $this->udpPort);
     }
 
-    public function discover() : array
+    public function discover(): array
     {
         $bulbs = [];
 
         $message = new \stdClass();
         $message->method = 'registration';
         $message->params = new \stdClass();
-        $message->params->phoneMac = $this->phone_mac;
+        $message->params->phoneMac = $this->phoneMac;
         $message->params->register = false;
-        $message->params->phoneIp = $this->local_ip;
+        $message->params->phoneIp = $this->localIp;
         $message->params->id = 1;
-        
-        $results = $this->send_udp($message);
-        // Log::info('Discovery results: ' . print_r($results, true));
 
-        foreach($results as $data) 
-        {
+        $results = $this->send_udp($message);
+
+        foreach ($results as $data) {
             $mac = $data['result']['mac'];
             $from = $data['from'];
-            if($mac)
-            {
-                // push mac / ip object to $results
+            if ($mac) {
                 array_push($bulbs, ['mac' => $mac, 'ip' => $from]);
                 $this->get_pilot_state($from);
                 $this->get_user_config($from);
@@ -195,48 +196,17 @@ class Wiz
         return $results;
     }
 
-        public function send_udp($message, $ips = null) : array
+    public function send_udp($message, $ips = null): array
     {
-        // normalize to array of targets
         $targets = $ips
             ? (is_array($ips) ? $ips : [$ips])
-            : [$this->broadcast_address];
+            : [$this->broadcastAddress];
 
-        $results = [];
-        $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
-        $payload = json_encode($message);
+        $this->transport->send($message, $targets);
+        $results = $this->transport->receive($this->waitTime);
+        $this->transport->close();
 
-        socket_set_option($socket, SOL_SOCKET, SO_BROADCAST, 1);
-
-        // send the same payload to each IP
-        foreach ($targets as $destIp) {
-            if ($destIp !== $this->broadcast_address && !IpValidator::isPrivateIp($destIp)) {
-                Log::warning("Skipping non-private IP in send_udp: {$destIp}");
-                continue;
-            }
-            socket_sendto($socket, $payload, strlen($payload), 0, $destIp, $this->udp_port);
-        }
-
-        socket_set_option($socket, SOL_SOCKET, SO_RCVTIMEO, ['sec'=>1, 'usec'=>0]);
-        $start_time = microtime(true);
-
-        // <-- $SELECTION_PLACEHOLDER$ -->
-        while (true) {
-            $buf = '';
-            $from = '';
-            $port = 0;
-            $bytes = @socket_recvfrom($socket, $buf, 1024, 0, $from, $port);
-            if ($bytes === false) break;
-            if ($bytes > 0) {
-                $data = json_decode($buf, true);
-                $data['from'] = $from;
-                $results[] = $data;
-            }
-            if (microtime(true) - $start_time > $this->wait_time) break;
-        }
-
-        socket_close($socket);
-        return $results;
+        return $results ?: [];
     }
 
     public function get_local_ip()
