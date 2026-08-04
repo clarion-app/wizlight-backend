@@ -46,14 +46,40 @@ class Wiz
             $mac = $data['result']['mac'];
             $from = $data['from'];
             if ($mac) {
-                array_push($bulbs, ['mac' => $mac, 'ip' => $from]);
-                $this->get_pilot_state($from);
-                $this->get_user_config($from);
-                $this->get_system_config($from);
+                $pilotData = $this->get_pilot_state($from, true);
+                $sysConfigData = $this->get_system_config($from, true);
+
+                $bulbEntry = [
+                    'mac' => $mac,
+                    'ip' => $from,
+                    'pilot_state' => $this->extractPilotPayload($pilotData),
+                    'system_config' => $this->extractSysConfigPayload($sysConfigData),
+                ];
+                array_push($bulbs, $bulbEntry);
             }
         }
 
         return $bulbs;
+    }
+
+    private function extractPilotPayload(array $results): array
+    {
+        foreach ($results as $result) {
+            if (isset($result['result']) && isset($result['result']['mac'])) {
+                return $result['result'];
+            }
+        }
+        return [];
+    }
+
+    private function extractSysConfigPayload(array $results): array
+    {
+        foreach ($results as $result) {
+            if (isset($result['result']) && isset($result['result']['mac'])) {
+                return $result['result'];
+            }
+        }
+        return [];
     }
 
     public function get_user_config($ip) : array
@@ -66,14 +92,17 @@ class Wiz
         return $results;
     }
 
-    public function get_system_config($ip) : array
+    public function get_system_config($ip, bool $skip_db_updates = false) : array
     {
         $message = new \stdClass();
         $message->method = 'getSystemConfig';
         $message->params = new \stdClass();
         $results = $this->send_udp($message, $ip);
         if(!$results) return [];
-        //\Log::info('getSystemConfig results: ' . print_r($results, true));
+
+        if ($skip_db_updates) {
+            return $results;
+        }
 
         $data = $results[0]['result'];
         $bulb = Bulb::where('mac', $data['mac'])->first();
@@ -91,13 +120,18 @@ class Wiz
         return $results;
     }
 
-    public function get_pilot_state($ip) : array
+    public function get_pilot_state($ip, bool $skip_db_updates = false) : array
     {
         $pilot = new \stdClass();
         $pilot->method = 'getPilot';
         $pilot->params = new \stdClass();
-        
+
         $results = $this->send_udp($pilot, $ip);
+
+        if ($skip_db_updates) {
+            return $results;
+        }
+
         foreach($results as $result)
         {
             $bulb = $result['result'];
@@ -110,12 +144,12 @@ class Wiz
                 {
                     $bulb['r'] = 0;
                 }
-                
-                if(!isset($bulb['g'])) 
+
+                if(!isset($bulb['g']))
                 {
                     $bulb['g'] = 0;
                 }
-                
+
                 if(!isset($bulb['b']))
                 {
                     $bulb['b'] = 0;
@@ -138,7 +172,7 @@ class Wiz
                     $b->red = $bulb['r'];
                     $update = true;
                 }
-                
+
                 if($b->green != $bulb['g'])
                 {
                     $b->green = $bulb['g'];
