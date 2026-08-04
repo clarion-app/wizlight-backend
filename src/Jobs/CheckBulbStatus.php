@@ -12,9 +12,18 @@ use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
 
+/**
+ * One bulb, one getPilot round trip, 2-second timeout, reconcile, done.
+ *
+ * Owns the reconciliation (FR-010/FR-010b/FR-015): Wiz returns the decoded
+ * payload and this job decides what it means for the row. Every attribute is
+ * compared, signal included and independently, and the light's report always
+ * wins over the stored intended state.
+ */
 class CheckBulbStatus implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
     public string $bulbId;
     private ?UdpTransport $transport;
 
@@ -37,11 +46,87 @@ class CheckBulbStatus implements ShouldQueue
         );
 
         $results = $wiz->get_pilot_state($bulb->ip);
+        if (!$results) {
+            return $results;
+        }
 
-        if ($results) {
+        $payload = $this->payloadFor($results, $bulb->mac);
+        if ($payload === null) {
+            return $results;
+        }
+
+        if ($this->reconcile($bulb, $payload)) {
             event(new BulbStatusEvent($bulb->fresh()));
         }
 
         return $results;
+    }
+
+    /**
+     * Pick this bulb's datagram out of the response set.
+     */
+    private function payloadFor(array $results, ?string $mac): ?array
+    {
+        foreach ($results as $result) {
+            $payload = $result['result'] ?? null;
+            if (!is_array($payload)) {
+                continue;
+            }
+            if ($mac === null || !isset($payload['mac']) || $payload['mac'] === $mac) {
+                return $payload;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Compare every attribute; write once if any differs. Returns whether a
+     * write happened, so an unchanged light costs zero writes — which matters
+     * because every write here is a bridged on-chain write.
+     */
+    private function reconcile(Bulb $bulb, array $payload): bool
+    {
+        $reported = [
+            'state' => isset($payload['state']) ? (bool) $payload['state'] : null,
+            'dimming' => $payload['dimming'] ?? null,
+            'red' => $payload['r'] ?? 0,
+            'green' => $payload['g'] ?? 0,
+            'blue' => $payload['b'] ?? 0,
+            'temperature' => $payload['temperature'] ?? null,
+            // FR-010: signal is an independent trigger, not a passenger on
+            // some other attribute happening to change at the same moment.
+            'signal' => $payload['rssi'] ?? null,
+        ];
+
+        $changed = false;
+        foreach ($reported as $column => $value) {
+            if ($value === null) {
+                continue;
+            }
+            if ($column === 'state') {
+                if ((bool) $bulb->state !== $value) {
+                    $bulb->state = $value;
+                    $changed = true;
+                }
+                continue;
+            }
+            if ($bulb->{$column} != $value) {
+                $bulb->{$column} = $value;
+                $changed = true;
+            }
+        }
+
+        // Deliberately no `local_node_seen_at` write here. FR-009 restricts that
+        // column to the owning node contacting the device; BulbDiscovery is
+        // where the owner does that and where the flow in data-model.md places
+        // the stamp. Advancing it here as well would make an unchanged light
+        // cost a bridged on-chain write every minute — the exact thing the
+        // no-change case below exists to prevent.
+        if ($changed) {
+            $bulb->save();
+        }
+
+        return $changed;
     }
 }

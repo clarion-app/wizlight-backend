@@ -13,6 +13,7 @@ class Bulb extends Model
 
     protected $fillable = [
         'local_node_id',
+        'local_node_seen_at',
         'mac',
         'ip',
         'name',
@@ -29,6 +30,10 @@ class Bulb extends Model
     ];
 
     protected $table = 'wizlight_bulbs';
+
+    protected $casts = [
+        'local_node_seen_at' => 'datetime',
+    ];
 
     public function last_seen()
     {

@@ -86,16 +86,103 @@ class SendBulbCommandTest extends TestCase
     }
 
     /** @test */
-    public function handle_acquires_per_bulb_lock_for_serialization()
+    public function handle_serializes_behind_the_per_bulb_lock()
     {
-        $transport = $this->makeMockTransport();
-        $command = (object)['method' => 'setPilot'];
-        $job = new SendBulbCommand('192.168.1.10', $command, 'bulb-serialize', $transport);
+        // FR-002: the send happens inside this bulb's lock, so a concurrent
+        // command to the same device cannot interleave with it.
+        $lockFreeDuringSend = null;
+        $transport = $this->makeMockTransport(function () use (&$lockFreeDuringSend) {
+            $contender = Cache::lock('bulb-command-bulb-serialize', 10);
+            $lockFreeDuringSend = $contender->get();
+            if ($lockFreeDuringSend) {
+                $contender->release();
+            }
+        });
 
-        // Verify lock key pattern in source
-        $source = file_get_contents(__DIR__ . '/../../src/Jobs/SendBulbCommand.php');
-        $this->assertStringContainsString('bulb-command-', $source, 'Job must use per-bulb lock key');
-        $this->assertStringContainsString('Cache::lock', $source, 'Job must use Cache::lock for serialization');
+        $job = new SendBulbCommand('192.168.1.10', (object) ['method' => 'setPilot'], 'bulb-serialize', $transport);
+        $job->handle();
+
+        $this->assertFalse($lockFreeDuringSend, 'The per-bulb lock must be held across the send');
+    }
+
+    /** @test */
+    public function handle_does_not_wait_on_a_different_bulbs_lock()
+    {
+        // The lock must be keyed per device, or a room update to N lights
+        // serializes behind one another.
+        $transport = $this->makeMockTransport();
+        $job = new SendBulbCommand('192.168.1.11', (object) ['method' => 'setPilot'], 'bulb-other', $transport);
+
+        $lock = Cache::lock('bulb-command-bulb-serialize', 10);
+        $lock->get();
+
+        try {
+            $job->handle();
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertTrue(true, 'A command to a different bulb proceeds without waiting');
+    }
+
+    /** @test */
+    public function consecutive_commands_to_one_bulb_are_paced_by_the_configured_interval()
+    {
+        // SC-011 / FR-002b, against a controlled clock rather than real waiting.
+        // Note the case that must fail before the fix: both commands succeed, so
+        // retry backoff never engages and never paces them.
+        config(['wizlight.throttle.min_interval_ms' => 200]);
+
+        $transport = $this->makeMockTransport();
+
+        $first = new ClockedSendBulbCommand('192.168.1.10', (object) ['method' => 'setPilot'], 'bulb-paced', $transport);
+        $first->fakeNowMs = 1_000_000;
+        $first->handle();
+
+        $second = new ClockedSendBulbCommand('192.168.1.10', (object) ['method' => 'setPilot'], 'bulb-paced', $transport);
+        $second->fakeNowMs = 1_000_050; // 50 ms after the first send
+        $second->handle();
+
+        $this->assertEquals([150], $second->slept, 'The second command waits out the remaining 150ms');
+        $this->assertEquals([], $first->slept, 'An isolated first command is not delayed');
+    }
+
+    /** @test */
+    public function a_command_arriving_after_the_interval_is_not_delayed()
+    {
+        config(['wizlight.throttle.min_interval_ms' => 200]);
+
+        $transport = $this->makeMockTransport();
+
+        $first = new ClockedSendBulbCommand('192.168.1.10', (object) ['method' => 'setPilot'], 'bulb-spaced', $transport);
+        $first->fakeNowMs = 2_000_000;
+        $first->handle();
+
+        $second = new ClockedSendBulbCommand('192.168.1.10', (object) ['method' => 'setPilot'], 'bulb-spaced', $transport);
+        $second->fakeNowMs = 2_000_500;
+        $second->handle();
+
+        $this->assertEquals([], $second->slept);
+    }
+
+    /** @test */
+    public function commands_to_different_bulbs_do_not_delay_each_other()
+    {
+        // The throttle is per device, never global: a room update fanning out to
+        // N lights must not be serialized behind a shared pace (FR-002b/SC-011).
+        config(['wizlight.throttle.min_interval_ms' => 200]);
+
+        $transport = $this->makeMockTransport();
+        $slept = [];
+
+        foreach (['room-bulb-1', 'room-bulb-2', 'room-bulb-3', 'room-bulb-4', 'room-bulb-5'] as $i => $bulbId) {
+            $job = new ClockedSendBulbCommand('192.168.1.' . (10 + $i), (object) ['method' => 'setPilot'], $bulbId, $transport);
+            $job->fakeNowMs = 3_000_000; // the whole fan-out happens at one instant
+            $job->handle();
+            $slept = array_merge($slept, $job->slept);
+        }
+
+        $this->assertEquals([], $slept, 'A room fan-out to five lights waits for nothing');
     }
 
     /** @test */
@@ -141,5 +228,27 @@ class SendBulbCommandTest extends TestCase
         Bus::assertDispatched(SendBulbCommand::class, function ($job) {
             return $job->bulbId === 'bulb-dispatch';
         });
+    }
+}
+
+/**
+ * SendBulbCommand with its clock and its sleep replaced, so the throttle's
+ * timing is asserted rather than waited out.
+ */
+class ClockedSendBulbCommand extends SendBulbCommand
+{
+    public int $fakeNowMs = 0;
+
+    /** @var array<int, int> milliseconds slept, in order */
+    public array $slept = [];
+
+    protected function nowMs(): int
+    {
+        return $this->fakeNowMs;
+    }
+
+    protected function sleepMs(int $milliseconds): void
+    {
+        $this->slept[] = $milliseconds;
     }
 }

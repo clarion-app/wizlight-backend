@@ -10,7 +10,8 @@ class SocketUdpTransport implements UdpTransport
     private string $broadcastAddress;
     private int $udpPort;
 
-    private ?resource $socket = null;
+    /** @var \Socket|null */
+    private $socket = null;
 
     public function __construct(string $broadcastAddress = '255.255.255.255', int $udpPort = 38899)
     {
@@ -66,7 +67,8 @@ class SocketUdpTransport implements UdpTransport
         }
     }
 
-    private function ensureSocket(): resource
+    /** @return \Socket */
+    private function ensureSocket()
     {
         if ($this->socket === null) {
             $this->socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);

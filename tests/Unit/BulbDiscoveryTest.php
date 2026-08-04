@@ -6,6 +6,7 @@ use Orchestra\Testbench\TestCase;
 use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
+use ClarionApp\WizlightBackend\Transport\FakeUdpTransport;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
@@ -185,6 +186,7 @@ class BulbDiscoveryTest extends TestCase
         $existingNodeId = (string) \Illuminate\Support\Str::uuid();
         $existingBulb = Bulb::create([
             'local_node_id' => $existingNodeId,
+            'local_node_seen_at' => now(),
             'mac' => 'AA:BB:CC:DD:EE:03',
             'ip' => '192.168.1.12',
             'name' => 'Existing Bulb',
@@ -297,6 +299,7 @@ class BulbDiscoveryTest extends TestCase
         $otherNodeId = (string) \Illuminate\Support\Str::uuid();
         $existingBulb = Bulb::create([
             'local_node_id' => $otherNodeId,
+            'local_node_seen_at' => now()->subHours(25),
             'mac' => 'AA:BB:CC:DD:EE:06',
             'ip' => '192.168.1.30',
             'name' => 'Lapsed Bulb',
@@ -307,9 +310,6 @@ class BulbDiscoveryTest extends TestCase
             'blue' => 0,
             'signal' => -55,
         ]);
-
-        $existingBulb->updated_at = now()->subHours(25);
-        $existingBulb->save();
 
         $bulbData = [
             [
@@ -346,6 +346,7 @@ class BulbDiscoveryTest extends TestCase
         $originalDimming = 100;
         Bulb::create([
             'local_node_id' => $otherNodeId,
+            'local_node_seen_at' => now(),
             'mac' => 'AA:BB:CC:DD:EE:07',
             'ip' => $originalIp,
             'name' => 'Active Owner Bulb',
@@ -381,5 +382,227 @@ class BulbDiscoveryTest extends TestCase
         $this->assertEquals($originalIp, $bulb->ip, 'IP should not be updated when skipped');
         $this->assertEquals($originalState, (bool) $bulb->state, 'State should not be updated when skipped');
         $this->assertEquals($originalDimming, $bulb->dimming, 'Dimming should not be updated when skipped');
+    }
+
+    /** @test */
+    public function claim_lapses_even_when_another_node_keeps_touching_the_row()
+    {
+        // The case that distinguishes the local_node_seen_at rule from an
+        // updated_at rule (FR-009). The owner has been silent past the window,
+        // but some other node's write — or a status check — has refreshed
+        // updated_at seconds ago. Under an updated_at rule the claim would
+        // never lapse and the device would stay uncontrollable forever.
+        config(['wizlight.ownership.lapse_hours' => 24]);
+
+        $deadNodeId = (string) \Illuminate\Support\Str::uuid();
+        $bulb = Bulb::create([
+            'local_node_id' => $deadNodeId,
+            'local_node_seen_at' => now()->subHours(30),
+            'mac' => 'AA:BB:CC:DD:EE:08',
+            'ip' => '192.168.1.50',
+            'name' => 'Orphaned Bulb',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -55,
+        ]);
+
+        // Somebody else touches the row right now. updated_at is fresh.
+        $bulb->signal = -44;
+        $bulb->save();
+        $this->assertTrue(
+            $bulb->fresh()->updated_at->greaterThan(now()->subMinute()),
+            'Precondition: updated_at is fresh'
+        );
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:08',
+                'ip' => '192.168.1.51',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:08', 'state' => true, 'dimming' => 70, 'r' => 10, 'g' => 20, 'b' => 30, 'rssi' => -41], 'from' => '192.168.1.51'],
+                ],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        app()->instance(UdpTransport::class, $this->makeMockTransport($this->buildDiscoveryResponses($bulbData)));
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:08')->first();
+        $this->assertEquals('test-node-001', $bulb->local_node_id, 'A silent owner lapses regardless of who else touched the row');
+        $this->assertNotNull($bulb->local_node_seen_at);
+        $this->assertTrue(
+            $bulb->local_node_seen_at->greaterThan(now()->subMinute()),
+            'Reclaim writes owner and a fresh liveness timestamp in the same update'
+        );
+    }
+
+    /** @test */
+    public function a_claim_with_no_liveness_timestamp_is_treated_as_lapsed()
+    {
+        // Rows written before local_node_seen_at existed. The first node to run
+        // discovery after upgrading establishes a real timestamp.
+        $legacyNodeId = (string) \Illuminate\Support\Str::uuid();
+        Bulb::create([
+            'local_node_id' => $legacyNodeId,
+            'local_node_seen_at' => null,
+            'mac' => 'AA:BB:CC:DD:EE:09',
+            'ip' => '192.168.1.60',
+            'name' => 'Legacy Bulb',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -55,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:09',
+                'ip' => '192.168.1.60',
+                'pilot_response' => [],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        app()->instance(UdpTransport::class, $this->makeMockTransport($this->buildDiscoveryResponses($bulbData)));
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:09')->first();
+        $this->assertEquals('test-node-001', $bulb->local_node_id);
+        $this->assertNotNull($bulb->local_node_seen_at, 'The reclaiming node establishes the timestamp');
+    }
+
+    /** @test */
+    public function new_bulb_is_claimed_with_a_liveness_timestamp()
+    {
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:0A',
+                'ip' => '192.168.1.70',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:0A', 'state' => true, 'dimming' => 55, 'r' => 1, 'g' => 2, 'b' => 3, 'rssi' => -33], 'from' => '192.168.1.70'],
+                ],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        app()->instance(UdpTransport::class, $this->makeMockTransport($this->buildDiscoveryResponses($bulbData)));
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:0A')->first();
+        $this->assertEquals('test-node-001', $bulb->local_node_id);
+        $this->assertNotNull($bulb->local_node_seen_at, 'A first claim stamps liveness alongside ownership');
+    }
+
+    /** @test */
+    public function owner_renews_its_own_claim_once_it_has_aged()
+    {
+        config(['wizlight.ownership.heartbeat_minutes' => 60]);
+
+        $stamped = now()->subHours(3);
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => $stamped,
+            'mac' => 'AA:BB:CC:DD:EE:0B',
+            'ip' => '192.168.1.80',
+            'name' => 'My Aging Bulb',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -55,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:0B',
+                'ip' => '192.168.1.80',
+                'pilot_response' => [],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        app()->instance(UdpTransport::class, $this->makeMockTransport($this->buildDiscoveryResponses($bulbData)));
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:0B')->first();
+        $this->assertTrue(
+            $bulb->local_node_seen_at->greaterThan($stamped),
+            'The owner must advance its own liveness timestamp, or its claim eventually lapses under it'
+        );
+    }
+
+    /** @test */
+    public function owner_does_not_rewrite_a_fresh_claim_on_an_unchanged_bulb()
+    {
+        // Renewing every cycle would put a bridged on-chain write on every
+        // light every minute — the cost the no-change rule exists to avoid.
+        config(['wizlight.ownership.heartbeat_minutes' => 60]);
+
+        $bulb = Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now()->subMinutes(5),
+            'mac' => 'AA:BB:CC:DD:EE:0C',
+            'ip' => '192.168.1.90',
+            'name' => 'My Fresh Bulb',
+            'state' => true,
+            'dimming' => 42,
+            'red' => 7,
+            'green' => 8,
+            'blue' => 9,
+            'signal' => -37,
+        ]);
+        $originalUpdatedAt = $bulb->fresh()->updated_at;
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:0C',
+                'ip' => '192.168.1.90',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:0C', 'state' => true, 'dimming' => 42, 'r' => 7, 'g' => 8, 'b' => 9, 'rssi' => -37], 'from' => '192.168.1.90'],
+                ],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        app()->instance(UdpTransport::class, $this->makeMockTransport($this->buildDiscoveryResponses($bulbData)));
+
+        sleep(1);
+        (new BulbDiscovery())->handle();
+
+        $this->assertEquals(
+            $originalUpdatedAt,
+            Bulb::where('mac', 'AA:BB:CC:DD:EE:0C')->first()->updated_at,
+            'An unchanged bulb with a fresh claim must cost zero writes'
+        );
+    }
+
+    /** @test */
+    public function discovery_issues_exactly_two_unicast_round_trips_per_light()
+    {
+        // SC-012 / FR-008b, asserted on the path production actually takes.
+        $transport = new FakeUdpTransport();
+        $transport->willRespond(
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:0D'], 'from' => '192.168.1.100'],
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:0E'], 'from' => '192.168.1.101'],
+        );
+
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $this->assertSame(2, $transport->sendCountForMethod('getPilot'));
+        $this->assertSame(2, $transport->sendCountForMethod('getSystemConfig'));
+        $this->assertSame(0, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig must not be on the discovery path');
     }
 }

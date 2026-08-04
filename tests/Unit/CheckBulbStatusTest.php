@@ -4,7 +4,7 @@ namespace ClarionApp\WizlightBackend\Tests\Unit;
 
 use Orchestra\Testbench\TestCase;
 use ClarionApp\WizlightBackend\Jobs\CheckBulbStatus;
-use ClarionApp\WizlightBackend\Transport\UdpTransport;
+use ClarionApp\WizlightBackend\Transport\FakeUdpTransport;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use Illuminate\Support\Facades\Event;
@@ -38,19 +38,19 @@ class CheckBulbStatusTest extends TestCase
         $this->loadMigrationsFrom(__DIR__ . '/../../src/Migrations');
     }
 
-    private function makeMockTransport(?array $receiveResponse = null): UdpTransport
+    private function makeTransport(?array $datagram = null): FakeUdpTransport
     {
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('receive')->willReturn($receiveResponse);
-        $mock->method('send');
-        $mock->method('close');
-        return $mock;
+        $fake = new FakeUdpTransport();
+
+        return $datagram === null
+            ? $fake->willRespondWithNothing()
+            : $fake->willRespond($datagram);
     }
 
     /** @test */
     public function handle_returns_null_when_bulb_not_found()
     {
-        $transport = $this->makeMockTransport();
+        $transport = $this->makeTransport();
         $job = new CheckBulbStatus('non-existent-uuid', $transport);
         $result = $job->handle();
 
@@ -60,14 +60,7 @@ class CheckBulbStatusTest extends TestCase
     /** @test */
     public function handle_uses_two_second_timeout()
     {
-        $timeoutReceived = null;
-        $transport = $this->createMock(UdpTransport::class);
-        $transport->method('receive')->willReturnCallback(function ($timeout) use (&$timeoutReceived) {
-            $timeoutReceived = $timeout;
-            return null;
-        });
-        $transport->method('send');
-        $transport->method('close');
+        $transport = new FakeUdpTransport();
 
         $bulb = Bulb::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),
@@ -86,14 +79,13 @@ class CheckBulbStatusTest extends TestCase
         $job = new CheckBulbStatus((string) $bulb->id, $transport);
         $job->handle();
 
-        $this->assertEquals(2.0, $timeoutReceived, 'CheckBulbStatus should use a 2-second timeout');
+        $this->assertEquals([2.0], $transport->receiveTimeouts(), 'CheckBulbStatus should use a 2-second timeout');
     }
 
     /** @test */
     public function handle_updates_signal_only_when_other_attributes_match()
     {
-        $transport = $this->makeMockTransport([
-            [
+        $transport = $this->makeTransport([
                 'result' => [
                     'mac' => 'AA:BB:CC:DD:EE:02',
                     'state' => true,
@@ -104,8 +96,7 @@ class CheckBulbStatusTest extends TestCase
                     'rssi' => -40,
                 ],
                 'from' => '192.168.1.20',
-            ],
-        ]);
+            ]);
 
         $bulb = Bulb::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),
@@ -133,8 +124,7 @@ class CheckBulbStatusTest extends TestCase
     /** @test */
     public function handle_skips_update_when_all_attributes_match()
     {
-        $transport = $this->makeMockTransport([
-            [
+        $transport = $this->makeTransport([
                 'result' => [
                     'mac' => 'AA:BB:CC:DD:EE:03',
                     'state' => false,
@@ -145,8 +135,7 @@ class CheckBulbStatusTest extends TestCase
                     'rssi' => -55,
                 ],
                 'from' => '192.168.1.30',
-            ],
-        ]);
+            ]);
 
         $bulb = Bulb::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),
@@ -175,8 +164,7 @@ class CheckBulbStatusTest extends TestCase
     /** @test */
     public function handle_corrects_db_to_match_physical_state()
     {
-        $transport = $this->makeMockTransport([
-            [
+        $transport = $this->makeTransport([
                 'result' => [
                     'mac' => 'AA:BB:CC:DD:EE:04',
                     'state' => false,
@@ -187,8 +175,7 @@ class CheckBulbStatusTest extends TestCase
                     'rssi' => -70,
                 ],
                 'from' => '192.168.1.40',
-            ],
-        ]);
+            ]);
 
         $bulb = Bulb::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),

@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Queue;
 use ClarionApp\Backend\ClarionPackageServiceProvider;
 use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
 use ClarionApp\WizlightBackend\Jobs\BulbStatusCheck;
+use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Commands\WizlightDiscover;
 use Illuminate\Support\Facades\Log;
 
@@ -51,14 +53,23 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
             require __DIR__.'/Routes.php';
         }
 
+        // FR-011: the last-seen cascade lives with the model, not with a caller,
+        // so it holds for every deletion path — HTTP, console, future bulk
+        // delete. Registered here because EloquentMultiChainBridge's own boot()
+        // makes a class-level boot()/booted() hook on Bulb impractical. It fires
+        // on soft deletes too, which a database ON DELETE CASCADE cannot see.
+        Bulb::deleting(function (Bulb $bulb) {
+            BulbLastSeen::where('bulb_id', $bulb->id)->delete();
+        });
+
         $this->app->booted(function () {
             $schedule = $this->app->make(Schedule::class);
-            $schedule->call(function() {
-                BulbDiscovery::dispatchSync();
-            })->everyMinute();
-            $schedule->call(function() {
-                (new BulbStatusCheck())->handle();
-            })->everyMinute();
+
+            // FR-006b: $schedule->job() enqueues and returns. Nothing in this
+            // block may do I/O — no dispatchSync(), no ->handle(), no socket —
+            // so a slow or unreachable device can never delay the scheduler.
+            $schedule->job(new BulbDiscovery())->everyMinute();
+            $schedule->job(new BulbStatusCheck())->everyMinute();
         });
     }
 }

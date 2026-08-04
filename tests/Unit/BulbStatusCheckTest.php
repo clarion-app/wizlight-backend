@@ -9,6 +9,7 @@ use ClarionApp\WizlightBackend\Transport\UdpTransport;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 
 class BulbStatusCheckTest extends TestCase
 {
@@ -85,18 +86,108 @@ class BulbStatusCheckTest extends TestCase
     /** @test */
     public function orchestrator_skips_when_lock_is_held()
     {
-        $lock = Cache::store('testing')->lock('bulb-status-check', 30);
-        $lock->get(function () {
-            // Lock is held — create a long-running hold so inner call can't acquire
-            usleep(100000);
-        });
+        // A bulb must exist, or this passes whether the lock works or not.
+        Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:14',
+            'ip' => '192.168.1.14',
+            'name' => 'Bulb 5',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -50,
+        ]);
 
         Bus::fake(CheckBulbStatus::class);
 
-        $job = new BulbStatusCheck();
-        $job->handle();
+        // Hold the lock for the duration of the call, rather than taking and
+        // releasing it beforehand — the sweep must observe it held.
+        $lock = Cache::lock('bulb-status-check', 30);
+        $this->assertTrue($lock->get(), 'Precondition: the test holds the lock');
+
+        try {
+            (new BulbStatusCheck())->handle();
+        } finally {
+            $lock->release();
+        }
 
         Bus::assertNotDispatched(CheckBulbStatus::class);
+    }
+
+    /** @test */
+    public function orchestrator_returns_immediately_rather_than_waiting_for_the_lock()
+    {
+        // FR-007 is "skip", not "queue behind". Blocking on the lock would make
+        // sweeps pile up on one another, which is the defect being fixed.
+        Bus::fake(CheckBulbStatus::class);
+
+        $lock = Cache::lock('bulb-status-check', 30);
+        $lock->get();
+
+        try {
+            $start = microtime(true);
+            (new BulbStatusCheck())->handle();
+            $elapsed = microtime(true) - $start;
+        } finally {
+            $lock->release();
+        }
+
+        $this->assertLessThan(0.5, $elapsed, 'A contended sweep must return at once, not block');
+    }
+
+    /** @test */
+    public function orchestrator_queues_per_bulb_jobs_rather_than_running_them_inline()
+    {
+        // FR-006: the whole bound comes from the per-bulb jobs going onto the
+        // queue. Bus::dispatchSync() in the orchestrator's loop would run each
+        // check inline — N × 2s in one process — while still satisfying a naive
+        // "was CheckBulbStatus dispatched?" assertion.
+        foreach (['AA:BB:CC:DD:EE:15', 'AA:BB:CC:DD:EE:16', 'AA:BB:CC:DD:EE:17'] as $i => $mac) {
+            Bulb::create([
+                'id' => (string) \Illuminate\Support\Str::uuid(),
+                'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+                'mac' => $mac,
+                'ip' => '192.168.2.' . (10 + $i),
+                'name' => 'Bulb ' . $i,
+                'state' => false,
+                'dimming' => 100,
+                'red' => 0,
+                'green' => 0,
+                'blue' => 0,
+                'signal' => -50,
+            ]);
+        }
+
+        // A transport that fails the test if it is touched: the orchestrator
+        // contacts no device, and inline per-bulb jobs would contact three.
+        $forbidden = new class implements UdpTransport {
+            public bool $touched = false;
+            public function send(mixed $message, array $targets): void { $this->touched = true; }
+            public function receive(float $timeout): ?array { $this->touched = true; return null; }
+            public function close(): void { $this->touched = true; }
+        };
+        $this->app->instance(UdpTransport::class, $forbidden);
+
+        Queue::fake();
+
+        (new BulbStatusCheck())->handle();
+
+        Queue::assertPushed(CheckBulbStatus::class, 3);
+        $this->assertFalse($forbidden->touched, 'The orchestrator itself must perform zero round trips');
+
+        // The discriminator. Bus::dispatchSync() on a ShouldQueue job pins it to
+        // the 'sync' connection, which runs it inline in this process — N × 2s,
+        // the linear sweep FR-006 exists to prevent. Under Queue::fake() both
+        // forms look "dispatched", so the connection is what distinguishes them.
+        Queue::assertPushed(CheckBulbStatus::class, function (CheckBulbStatus $job) {
+            return $job->connection !== 'sync';
+        });
+        Queue::assertNotPushed(CheckBulbStatus::class, function (CheckBulbStatus $job) {
+            return $job->connection === 'sync';
+        });
     }
 
     /** @test */

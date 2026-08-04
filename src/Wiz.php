@@ -1,11 +1,21 @@
 <?php
 namespace ClarionApp\WizlightBackend;
 
-use ClarionApp\WizlightBackend\LightColor;
-use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Transport\SocketUdpTransport;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
 
+/**
+ * Protocol codec for the WiZ UDP protocol (FR-015).
+ *
+ * This class formats requests, sends them through an injectable transport,
+ * decodes the responses, and returns plain arrays. It performs **no**
+ * persistence: no model lookups, no save(), no knowledge that a database
+ * exists. Deciding what to store — and storing it — belongs to the jobs and
+ * services that own the data (BulbDiscovery, CheckBulbStatus, WizlightService).
+ *
+ * If you find yourself adding `use ...\Models\Bulb;` here, the change belongs
+ * in a job or the service instead.
+ */
 class Wiz
 {
     private string $broadcastAddress;
@@ -28,6 +38,15 @@ class Wiz
         $this->transport = $transport ?? new SocketUdpTransport($this->broadcastAddress, $this->udpPort);
     }
 
+    /**
+     * Broadcast a registration request, then read state from each responder.
+     *
+     * Exactly two unicast round trips per light — getPilot and getSystemConfig.
+     * getUserConfig is deliberately not called (FR-008b / SC-012): its result
+     * was discarded, and it cost a third of discovery's per-light network time.
+     *
+     * @return array<int, array{mac: string, ip: string, pilot_state: array, system_config: array}>
+     */
     public function discover(): array
     {
         $bulbs = [];
@@ -43,205 +62,68 @@ class Wiz
         $results = $this->send_udp($message);
 
         foreach ($results as $data) {
-            $mac = $data['result']['mac'];
-            $from = $data['from'];
-            if ($mac) {
-                $pilotData = $this->get_pilot_state($from, true);
-                $sysConfigData = $this->get_system_config($from, true);
-
-                $bulbEntry = [
-                    'mac' => $mac,
-                    'ip' => $from,
-                    'pilot_state' => $this->extractPilotPayload($pilotData),
-                    'system_config' => $this->extractSysConfigPayload($sysConfigData),
-                ];
-                array_push($bulbs, $bulbEntry);
+            $mac = $data['result']['mac'] ?? null;
+            $from = $data['from'] ?? null;
+            if (!$mac || !$from) {
+                continue;
             }
+
+            $bulbs[] = [
+                'mac' => $mac,
+                'ip' => $from,
+                'pilot_state' => $this->firstResultPayload($this->get_pilot_state($from)),
+                'system_config' => $this->firstResultPayload($this->get_system_config($from)),
+            ];
         }
 
         return $bulbs;
     }
 
-    private function extractPilotPayload(array $results): array
+    /**
+     * Pick the first datagram in a response set that carries a device payload.
+     */
+    private function firstResultPayload(array $results): array
     {
         foreach ($results as $result) {
             if (isset($result['result']) && isset($result['result']['mac'])) {
                 return $result['result'];
             }
         }
+
         return [];
     }
 
-    private function extractSysConfigPayload(array $results): array
-    {
-        foreach ($results as $result) {
-            if (isset($result['result']) && isset($result['result']['mac'])) {
-                return $result['result'];
-            }
-        }
-        return [];
-    }
-
-    public function get_user_config($ip) : array
+    /**
+     * Fade in/out, default dimming, power-on behaviour and white-range data.
+     *
+     * Retained but uncalled (FR-008b): the discovery path no longer issues this
+     * round trip, and the later device-configuration phase is what consumes it.
+     */
+    public function get_user_config($ip): array
     {
         $message = new \stdClass();
         $message->method = 'getUserConfig';
         $message->params = new \stdClass();
-        $results = $this->send_udp($message, $ip);
-        //\Log::info('getUserConfig results: ' . print_r($results, true));
-        return $results;
+
+        return $this->send_udp($message, $ip);
     }
 
-    public function get_system_config($ip, bool $skip_db_updates = false) : array
+    public function get_system_config($ip): array
     {
         $message = new \stdClass();
         $message->method = 'getSystemConfig';
         $message->params = new \stdClass();
-        $results = $this->send_udp($message, $ip);
-        if(!$results) return [];
 
-        if ($skip_db_updates) {
-            return $results;
-        }
-
-        $data = $results[0]['result'];
-        $bulb = Bulb::where('mac', $data['mac'])->first();
-        if(!$bulb) return [];
-
-        $update = false;
-        if($bulb->model != $data['moduleName'])
-        {
-            $bulb->model = $data['moduleName'];
-            $update = true;
-        }
-
-        if($update) $bulb->save();
-
-        return $results;
+        return $this->send_udp($message, $ip);
     }
 
-    public function get_pilot_state($ip, bool $skip_db_updates = false) : array
+    public function get_pilot_state($ip): array
     {
         $pilot = new \stdClass();
         $pilot->method = 'getPilot';
         $pilot->params = new \stdClass();
 
-        $results = $this->send_udp($pilot, $ip);
-
-        if ($skip_db_updates) {
-            return $results;
-        }
-
-        foreach($results as $result)
-        {
-            $bulb = $result['result'];
-            $b = Bulb::where('mac', $bulb['mac'])->first();
-            if($b)
-            {
-                $update = false;
-
-                if(!isset($bulb['r']))
-                {
-                    $bulb['r'] = 0;
-                }
-
-                if(!isset($bulb['g']))
-                {
-                    $bulb['g'] = 0;
-                }
-
-                if(!isset($bulb['b']))
-                {
-                    $bulb['b'] = 0;
-                }
-
-                if($b->state != $bulb['state'])
-                {
-                    $b->state = $bulb['state'];
-                    $update = true;
-                }
-
-                if(isset($bulb['dimming']) && $b->dimming != $bulb['dimming'])
-                {
-                    $b->dimming = $bulb['dimming'];
-                    $update = true;
-                }
-
-                if($b->red != $bulb['r'])
-                {
-                    $b->red = $bulb['r'];
-                    $update = true;
-                }
-
-                if($b->green != $bulb['g'])
-                {
-                    $b->green = $bulb['g'];
-                    $update = true;
-                }
-
-                if($b->blue != $bulb['b'])
-                {
-                    $b->blue = $bulb['b'];
-                    $update = true;
-                }
-
-                if(isset($bulb['temperature']) && $b->temperature != $bulb['temperature'])
-                {
-                    $b->temperature = $bulb['temperature'];
-                    $update = true;
-                }
-
-                if($b->signal != $bulb['rssi'])
-                {
-                    $b->signal = $bulb['rssi'];
-                    $update = true;
-                }
-
-                if($update)
-                {
-                    $b->save();
-                }
-            }
-        }
-        return $results;
-    }
-
-    public function set_pilot_state($ips, RGBColor $color, int $dimming, int $temp, bool $state): array
-    {
-        $results = [];
-        $message = null;
-        $stateStr = $state ? 'on' : 'off';
-
-        $message = "{}";
-
-        if(!$temp)
-        {
-            [$r, $g, $b] = $color->getValue();
-        
-            $message = sprintf(
-                '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"state":%d}}',
-                $r,
-                $g,
-                $b,
-                $dimming,
-                $state
-            );
-        }
-        else
-        {
-            $message = sprintf(
-                '{"method":"setPilot","params":{"r":%d,"g":%d,"b":%d,"dimming":%d,"temp":%d,"state":%d}}',
-                0,
-                0,
-                0,
-                $dimming,
-                $temp,
-                $state
-            );
-        }
-
-        $results = $this->send_udp(json_decode($message), $ips);
-        return $results;
+        return $this->send_udp($pilot, $ip);
     }
 
     public function send_udp($message, $ips = null): array

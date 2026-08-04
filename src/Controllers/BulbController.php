@@ -3,7 +3,6 @@
 namespace ClarionApp\WizlightBackend\Controllers;
 
 use ClarionApp\WizlightBackend\Models\Bulb;
-use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use ClarionApp\WizlightBackend\Services\WizlightService;
@@ -59,7 +58,9 @@ class BulbController extends Controller
         if(!$bulb) {
             return response()->json(['message' => 'Bulb not found'], 404);
         }
-        BulbLastSeen::where('bulb_id', $bulb->id)->delete();
+        // The last-seen cascade is a model-level `deleting` hook registered in
+        // WizlightBackendServiceProvider (FR-011), so it fires here and on
+        // every other deletion path.
         if($bulb->forceDelete()) {
             return response()->json(['message' => 'Bulb deleted successfully'], 200);
         } else {

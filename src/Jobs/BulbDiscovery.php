@@ -61,35 +61,71 @@ class BulbDiscovery implements ShouldQueue
             $sysConfig = $bulb['system_config'] ?? [];
 
             if ($existing) {
+                // FR-009, first-discovery-wins: a node may claim a device only
+                // when the claim is unowned or has lapsed. A non-owning node
+                // writes no ownership column — and no IP or state either; the
+                // owner's view of the device is authoritative while it stands.
                 if ($existing->local_node_id !== $local_node_id) {
-                    $lapsed = $this->isOwnerLapsed($existing);
-                    if (!$lapsed) {
+                    if (!$this->isOwnerLapsed($existing)) {
                         continue;
                     }
-                    $existing->local_node_id = $local_node_id;
-                    $existing->save();
                 }
 
-                $updates = [
-                    'ip' => $bulb['ip'],
-                ];
+                $reported = ['ip' => $bulb['ip']];
+
                 if (!empty($pilotState)) {
-                    $updates['state'] = $pilotState['state'] ?? $existing->state;
-                    $updates['dimming'] = $pilotState['dimming'] ?? $existing->dimming;
-                    $updates['red'] = $pilotState['r'] ?? $existing->red;
-                    $updates['green'] = $pilotState['g'] ?? $existing->green;
-                    $updates['blue'] = $pilotState['b'] ?? $existing->blue;
-                    $updates['signal'] = $pilotState['rssi'] ?? $existing->signal;
+                    $reported += array_filter([
+                        'state' => isset($pilotState['state']) ? (bool) $pilotState['state'] : null,
+                        'dimming' => $pilotState['dimming'] ?? null,
+                        'red' => $pilotState['r'] ?? null,
+                        'green' => $pilotState['g'] ?? null,
+                        'blue' => $pilotState['b'] ?? null,
+                        'signal' => $pilotState['rssi'] ?? null,
+                    ], fn ($value) => $value !== null);
                 }
                 if (!empty($sysConfig) && isset($sysConfig['moduleName'])) {
-                    $updates['model'] = $sysConfig['moduleName'];
+                    $reported['model'] = $sysConfig['moduleName'];
                 }
-                $existing->update($updates);
-                $b = $existing->fresh();
+
+                // Compare loosely and assign only what actually differs. Writing
+                // the whole set unconditionally makes an unchanged bulb dirty
+                // every cycle (SQLite/MySQL hand back `1` where the device
+                // reports `true`), which would be a bridged on-chain write per
+                // light per minute.
+                $changed = false;
+                foreach ($reported as $column => $value) {
+                    if ($column === 'state') {
+                        if ((bool) $existing->state !== $value) {
+                            $existing->state = $value;
+                            $changed = true;
+                        }
+                        continue;
+                    }
+                    if ($existing->{$column} != $value) {
+                        $existing->{$column} = $value;
+                        $changed = true;
+                    }
+                }
+
+                if ($existing->local_node_id !== $local_node_id) {
+                    // Reclaim: owner and liveness timestamp in the same write.
+                    $existing->local_node_id = $local_node_id;
+                    $existing->local_node_seen_at = now();
+                    $changed = true;
+                } elseif ($this->shouldRefreshClaim($existing)) {
+                    $existing->local_node_seen_at = now();
+                    $changed = true;
+                }
+
+                if ($changed) {
+                    $existing->save();
+                }
+                $b = $existing;
             } else {
                 $b = new Bulb();
                 $b->id = (string) \Illuminate\Support\Str::uuid();
                 $b->local_node_id = $local_node_id;
+                $b->local_node_seen_at = now();
                 $b->mac = $bulb['mac'];
                 $b->ip = $bulb['ip'];
                 $b->name = 'Unnamed Bulb';
@@ -120,10 +156,43 @@ class BulbDiscovery implements ShouldQueue
         }
     }
 
+    /**
+     * FR-009: a claim lapses when the *owning* node has not contacted the
+     * device within the lapse window.
+     *
+     * Measured against `local_node_seen_at`, never `updated_at` — the latter is
+     * refreshed by any node's write and by every status check, so it would let
+     * a decommissioned node's bulb look owned forever as long as some other
+     * node kept touching the row. A NULL timestamp is a claim from before this
+     * column existed, and is treated as lapsed.
+     */
     private function isOwnerLapsed(Bulb $bulb): bool
     {
+        if ($bulb->local_node_seen_at === null) {
+            return true;
+        }
+
         $lapseHours = (int) config('wizlight.ownership.lapse_hours', 24);
-        $lapseThreshold = now()->subHours($lapseHours);
-        return $bulb->updated_at <= $lapseThreshold;
+
+        return $bulb->local_node_seen_at->lessThanOrEqualTo(now()->subHours($lapseHours));
+    }
+
+    /**
+     * The owner renews its own claim periodically rather than on every cycle.
+     *
+     * FR-009 wants the timestamp advancing while the owner is alive; SC-008b
+     * wants an unchanged bulb to cost zero writes, and every write here is
+     * replicated on-chain. Renewing hourly satisfies both — a healthy owner
+     * still renews 24 times inside the default 24-hour lapse window.
+     */
+    private function shouldRefreshClaim(Bulb $bulb): bool
+    {
+        if ($bulb->local_node_seen_at === null) {
+            return true;
+        }
+
+        $heartbeatMinutes = (int) config('wizlight.ownership.heartbeat_minutes', 60);
+
+        return $bulb->local_node_seen_at->lessThanOrEqualTo(now()->subMinutes($heartbeatMinutes));
     }
 }

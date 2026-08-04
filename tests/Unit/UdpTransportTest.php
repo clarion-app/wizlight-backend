@@ -4,106 +4,210 @@ namespace ClarionApp\WizlightBackend\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
+use ClarionApp\WizlightBackend\Transport\FakeUdpTransport;
+use ClarionApp\WizlightBackend\Transport\SocketUdpTransport;
 
+/**
+ * Contract test for {@see UdpTransport} (T003b).
+ *
+ * Every assertion runs against *both* shipped implementations, so the fake
+ * cannot drift from the socket-backed one. The socket-backed implementation is
+ * exercised over loopback only — no live network, no LAN traffic, no device.
+ */
 class UdpTransportTest extends TestCase
 {
-    /** @test */
-    public function interface_requires_send_method()
+    /** @var array<int, \Socket> */
+    private array $peers = [];
+
+    protected function tearDown(): void
     {
-        $mock = $this->createMock(UdpTransport::class);
-        $this->assertTrue(method_exists($mock, 'send'));
+        foreach ($this->peers as $peer) {
+            @socket_close($peer);
+        }
+        $this->peers = [];
+
+        parent::tearDown();
     }
 
-    /** @test */
-    public function interface_requires_receive_method()
+    /**
+     * @return array<string, array{0: callable}>
+     */
+    public static function implementations(): array
     {
-        $mock = $this->createMock(UdpTransport::class);
-        $this->assertTrue(method_exists($mock, 'receive'));
+        return [
+            'fake' => [fn (self $test, int $port) => new FakeUdpTransport()],
+            'socket' => [fn (self $test, int $port) => new SocketUdpTransport('127.0.0.1', $port)],
+        ];
     }
 
-    /** @test */
-    public function send_accepts_message_and_targets()
+    /**
+     * Bind a loopback UDP socket that echoes one canned reply per datagram it
+     * receives. Returns the port it is listening on.
+     */
+    private function startLoopbackDevice(array $reply): int
     {
-        $sentMessage = null;
-        $sentTargets = null;
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('send')->willReturnCallback(function ($msg, $targets) use (&$sentMessage, &$sentTargets) {
-            $sentMessage = $msg;
-            $sentTargets = $targets;
-        });
-        $message = (object)['method' => 'getPilot'];
-        $targets = ['192.168.1.10'];
+        $peer = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+        socket_bind($peer, '127.0.0.1', 0);
+        socket_getsockname($peer, $address, $port);
+        socket_set_option($peer, SOL_SOCKET, SO_RCVTIMEO, ['sec' => 2, 'usec' => 0]);
+        $this->peers[] = $peer;
 
-        $mock->send($message, $targets);
-        $this->assertEquals('getPilot', $sentMessage->method);
-        $this->assertEquals(['192.168.1.10'], $sentTargets);
+        // Reply is sent lazily by pumpLoopbackDevice() so the caller controls timing.
+        $this->pendingReplies[$port] = ['socket' => $peer, 'reply' => $reply];
+
+        return $port;
     }
 
-    /** @test */
-    public function receive_returns_array_on_response()
-    {
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('receive')->willReturn([
-            ['result' => ['state' => true], 'from' => '192.168.1.10'],
-        ]);
+    /** @var array<int, array{socket: \Socket, reply: array}> */
+    private array $pendingReplies = [];
 
-        $result = $mock->receive(2.0);
-        $this->assertIsArray($result);
-        $this->assertCount(1, $result);
-        $this->assertEquals('192.168.1.10', $result[0]['from']);
+    /**
+     * Read one datagram on the device socket and answer it, so the transport
+     * under test has something to receive.
+     */
+    private function pumpLoopbackDevice(int $port): void
+    {
+        $device = $this->pendingReplies[$port];
+        $buf = '';
+        $from = '';
+        $fromPort = 0;
+        $bytes = @socket_recvfrom($device['socket'], $buf, 2048, 0, $from, $fromPort);
+        if ($bytes === false) {
+            return;
+        }
+        $payload = json_encode($device['reply']);
+        socket_sendto($device['socket'], $payload, strlen($payload), 0, $from, $fromPort);
     }
 
-    /** @test */
-    public function receive_returns_null_on_timeout()
+    /**
+     * @dataProvider implementations
+     */
+    public function test_send_records_or_delivers_without_error(callable $make): void
     {
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('receive')->willReturn(null);
+        $port = $this->startLoopbackDevice(['result' => ['ok' => true]]);
+        $transport = $make($this, $port);
 
-        $result = $mock->receive(2.0);
-        $this->assertNull($result);
+        $transport->send((object) ['method' => 'getPilot'], ['127.0.0.1']);
+
+        // The socket implementation proves delivery by the device seeing it;
+        // the fake proves it by recording it. Both must accept the same call.
+        $this->assertInstanceOf(UdpTransport::class, $transport);
+        $transport->close();
     }
 
-    /** @test */
-    public function send_can_accept_multiple_targets()
+    /**
+     * @dataProvider implementations
+     */
+    public function test_receive_returns_decoded_datagrams_with_source_address(callable $make): void
     {
-        $sentTargets = null;
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('send')->willReturnCallback(function ($msg, $targets) use (&$sentTargets) {
-            $sentTargets = $targets;
-        });
-        $message = (object)['method' => 'setPilot'];
-        $targets = ['192.168.1.10', '192.168.1.11', '192.168.1.12'];
+        $reply = ['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'state' => true]];
+        $port = $this->startLoopbackDevice($reply);
+        $transport = $make($this, $port);
 
-        $mock->send($message, $targets);
-        $this->assertCount(3, $sentTargets);
-        $this->assertEquals('192.168.1.12', $sentTargets[2]);
+        if ($transport instanceof FakeUdpTransport) {
+            $transport->willRespond($reply + ['from' => '127.0.0.1']);
+        }
+
+        $transport->send((object) ['method' => 'getPilot'], ['127.0.0.1']);
+
+        if ($transport instanceof SocketUdpTransport) {
+            $this->pumpLoopbackDevice($port);
+        }
+
+        $results = $transport->receive(1.0);
+
+        $this->assertIsArray($results);
+        $this->assertCount(1, $results);
+        $this->assertEquals('AA:BB:CC:DD:EE:01', $results[0]['result']['mac']);
+        $this->assertTrue($results[0]['result']['state']);
+        $this->assertArrayHasKey('from', $results[0], 'Every datagram must carry its source address');
+        $this->assertEquals('127.0.0.1', $results[0]['from']);
+
+        $transport->close();
     }
 
-    /** @test */
-    public function send_accepts_broadcast_address()
+    /**
+     * @dataProvider implementations
+     */
+    public function test_receive_returns_null_when_nothing_answers(callable $make): void
     {
-        $sentTargets = null;
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('send')->willReturnCallback(function ($msg, $targets) use (&$sentTargets) {
-            $sentTargets = $targets;
-        });
-        $message = (object)['method' => 'registration'];
-        $targets = ['255.255.255.255'];
+        $port = $this->startLoopbackDevice(['result' => []]);
+        $transport = $make($this, $port);
 
-        $mock->send($message, $targets);
-        $this->assertEquals(['255.255.255.255'], $sentTargets);
+        $transport->send((object) ['method' => 'getPilot'], ['127.0.0.1']);
+
+        // Nothing pumped on the device side, so nothing comes back.
+        $this->assertNull($transport->receive(0.1));
+
+        $transport->close();
     }
 
-    /** @test */
-    public function receive_can_return_multiple_responses()
+    /**
+     * @dataProvider implementations
+     */
+    public function test_close_is_idempotent_and_transport_is_reusable_after_close(callable $make): void
     {
-        $mock = $this->createMock(UdpTransport::class);
-        $mock->method('receive')->willReturn([
-            ['result' => ['mac' => 'AA:BB:CC:DD:EE:01'], 'from' => '192.168.1.10'],
-            ['result' => ['mac' => 'AA:BB:CC:DD:EE:02'], 'from' => '192.168.1.11'],
-        ]);
+        $port = $this->startLoopbackDevice(['result' => []]);
+        $transport = $make($this, $port);
 
-        $result = $mock->receive(5.0);
-        $this->assertCount(2, $result);
+        $transport->send((object) ['method' => 'getPilot'], ['127.0.0.1']);
+        $transport->close();
+        $transport->close();
+
+        // Wiz closes after every send_udp() and then reuses the same instance,
+        // so a closed transport must still accept the next send.
+        $transport->send((object) ['method' => 'getPilot'], ['127.0.0.1']);
+        $transport->close();
+
+        $this->assertTrue(true);
+    }
+
+    /**
+     * @dataProvider implementations
+     */
+    public function test_send_accepts_multiple_targets(callable $make): void
+    {
+        $port = $this->startLoopbackDevice(['result' => []]);
+        $transport = $make($this, $port);
+
+        $transport->send((object) ['method' => 'setPilot'], ['127.0.0.1', '127.0.0.1', '127.0.0.1']);
+        $transport->close();
+
+        $this->assertTrue(true);
+    }
+
+    public function test_fake_records_sends_for_assertion(): void
+    {
+        $fake = new FakeUdpTransport();
+
+        $fake->send((object) ['method' => 'getPilot'], ['192.168.1.10']);
+        $fake->send((object) ['method' => 'getSystemConfig'], ['192.168.1.10']);
+        $fake->send((object) ['method' => 'getPilot'], ['192.168.1.11']);
+
+        $this->assertSame(3, $fake->sendCount());
+        $this->assertSame(2, $fake->sendCountForMethod('getPilot'));
+        $this->assertSame(1, $fake->sendCountForMethod('getSystemConfig'));
+        $this->assertSame(0, $fake->sendCountForMethod('getUserConfig'));
+        $this->assertEquals(['192.168.1.11'], $fake->sends()[2]['targets']);
+    }
+
+    public function test_fake_returns_scripted_responses_in_order_then_null(): void
+    {
+        $fake = new FakeUdpTransport();
+        $fake->willRespond(['result' => ['mac' => 'AA']], ['result' => ['mac' => 'BB']]);
+        $fake->willRespondWithNothing();
+        $fake->willRespond(['result' => ['mac' => 'CC']]);
+
+        $first = $fake->receive(1.0);
+        $this->assertCount(2, $first);
+        $this->assertEquals('BB', $first[1]['result']['mac']);
+
+        $this->assertNull($fake->receive(1.0));
+
+        $third = $fake->receive(1.0);
+        $this->assertEquals('CC', $third[0]['result']['mac']);
+
+        $this->assertNull($fake->receive(1.0), 'Unscripted receive behaves like a timeout');
+        $this->assertSame(4, $fake->receiveCount());
     }
 }

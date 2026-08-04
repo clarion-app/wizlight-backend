@@ -217,21 +217,62 @@ class BulbControllerTest extends TestCase
     public function destroy_cascades_deletion_to_bulb_last_seen()
     {
         $bulb = $this->createBulb();
-        $lastSeen = BulbLastSeen::create([
+        BulbLastSeen::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),
             'bulb_id' => $bulb->id,
             'last_seen_at' => now(),
         ]);
 
         $bulb_id = (string) $bulb->id;
-        $last_seen_id = (string) $lastSeen->id;
 
-        $controller = $this->makeController();
+        // Deliberately no Event::fake() here: the cascade is a model `deleting`
+        // listener, and faking events replaces the dispatcher it is registered
+        // on, which would make this test pass or fail for the wrong reason.
+        Bus::fake();
+        $controller = new BulbController(new WizlightService());
         $response = $controller->destroy($bulb_id);
 
         $this->assertEquals(200, $response->status());
         $this->assertNull(Bulb::withTrashed()->find($bulb_id));
-        $this->assertNull(BulbLastSeen::find($last_seen_id));
+        $this->assertEquals(0, BulbLastSeen::where('bulb_id', $bulb_id)->count());
+    }
+
+    /** @test */
+    public function deleting_a_bulb_outside_the_controller_still_cascades()
+    {
+        // The case that distinguishes a model-level rule from a controller-level
+        // one (T052): a console command, a bulk delete, or a relationship
+        // cascade never goes through BulbController::destroy().
+        $bulb = $this->createBulb(['mac' => 'aa:bb:cc:dd:ee:99']);
+        BulbLastSeen::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'bulb_id' => $bulb->id,
+            'last_seen_at' => now(),
+        ]);
+
+        $bulb_id = (string) $bulb->id;
+        $bulb->forceDelete();
+
+        $this->assertEquals(0, BulbLastSeen::where('bulb_id', $bulb_id)->count());
+    }
+
+    /** @test */
+    public function soft_deleting_a_bulb_also_cascades()
+    {
+        // A database ON DELETE CASCADE cannot see a soft delete — it is an
+        // UPDATE — which is why the application-level hook is the primary
+        // mechanism (FR-011) and the foreign key is only defence in depth.
+        $bulb = $this->createBulb(['mac' => 'aa:bb:cc:dd:ee:98']);
+        BulbLastSeen::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'bulb_id' => $bulb->id,
+            'last_seen_at' => now(),
+        ]);
+
+        $bulb_id = (string) $bulb->id;
+        $bulb->delete();
+
+        $this->assertNotNull(Bulb::withTrashed()->find($bulb_id), 'Soft delete keeps the bulb row');
         $this->assertEquals(0, BulbLastSeen::where('bulb_id', $bulb_id)->count());
     }
 
