@@ -6,6 +6,7 @@ use Orchestra\Testbench\TestCase;
 use ClarionApp\WizlightBackend\Controllers\BulbController;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use Illuminate\Http\Request;
@@ -208,6 +209,37 @@ class BulbControllerTest extends TestCase
         ]);
 
         $response = $controller->update($request, 'nonexistent-id');
+
+        $this->assertEquals(404, $response->status());
+    }
+
+    /** @test */
+    public function destroy_cascades_deletion_to_bulb_last_seen()
+    {
+        $bulb = $this->createBulb();
+        $lastSeen = BulbLastSeen::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'bulb_id' => $bulb->id,
+            'last_seen_at' => now(),
+        ]);
+
+        $bulb_id = (string) $bulb->id;
+        $last_seen_id = (string) $lastSeen->id;
+
+        $controller = $this->makeController();
+        $response = $controller->destroy($bulb_id);
+
+        $this->assertEquals(200, $response->status());
+        $this->assertNull(Bulb::withTrashed()->find($bulb_id));
+        $this->assertNull(BulbLastSeen::find($last_seen_id));
+        $this->assertEquals(0, BulbLastSeen::where('bulb_id', $bulb_id)->count());
+    }
+
+    /** @test */
+    public function destroy_returns_404_when_bulb_not_found()
+    {
+        $controller = $this->makeController();
+        $response = $controller->destroy('nonexistent-id');
 
         $this->assertEquals(404, $response->status());
     }
