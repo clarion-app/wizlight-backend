@@ -100,15 +100,11 @@ class Wiz
         $results = $this->send_udp($pilot, $ip);
         foreach($results as $result)
         {
-            //\Log::info('getPilot result: ' . print_r($result, true));
             $bulb = $result['result'];
             $b = Bulb::where('mac', $bulb['mac'])->first();
             if($b)
             {
                 $update = false;
-                // check if bulb state has changed
-                if($b->state != $bulb['state']) $update = true;
-                if(isset($bulb['dimming']) && $b->dimming != $bulb['dimming']) $update = true;
 
                 if(!isset($bulb['r']))
                 {
@@ -123,6 +119,18 @@ class Wiz
                 if(!isset($bulb['b']))
                 {
                     $bulb['b'] = 0;
+                }
+
+                if($b->state != $bulb['state'])
+                {
+                    $b->state = $bulb['state'];
+                    $update = true;
+                }
+
+                if(isset($bulb['dimming']) && $b->dimming != $bulb['dimming'])
+                {
+                    $b->dimming = $bulb['dimming'];
+                    $update = true;
                 }
 
                 if($b->red != $bulb['r'])
@@ -143,16 +151,22 @@ class Wiz
                     $update = true;
                 }
 
-                if(isset($bulb['temperature']) && $b->temperature != $bulb['temperature']) $update = true;
-                //if($b->signal != $bulb['rssi']) $update = true;
-                if(!$update) continue;
+                if(isset($bulb['temperature']) && $b->temperature != $bulb['temperature'])
+                {
+                    $b->temperature = $bulb['temperature'];
+                    $update = true;
+                }
 
-                //\Log::info('Updating bulb: ' . print_r($bulb, true));
+                if($b->signal != $bulb['rssi'])
+                {
+                    $b->signal = $bulb['rssi'];
+                    $update = true;
+                }
 
-                $b->state = $bulb['state'];
-                if(isset($bulb['dimming'])) $b->dimming = $bulb['dimming'];
-                $b->signal = $bulb['rssi'];
-                $b->save();
+                if($update)
+                {
+                    $b->save();
+                }
             }
         }
         return $results;

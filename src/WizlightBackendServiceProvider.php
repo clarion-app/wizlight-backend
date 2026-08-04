@@ -7,6 +7,7 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\Facades\Queue;
 use ClarionApp\Backend\ClarionPackageServiceProvider;
 use ClarionApp\WizlightBackend\Jobs\BulbDiscovery;
+use ClarionApp\WizlightBackend\Jobs\BulbStatusCheck;
 use ClarionApp\WizlightBackend\Commands\WizlightDiscover;
 use Illuminate\Support\Facades\Log;
 
@@ -54,6 +55,9 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
             $schedule = $this->app->make(Schedule::class);
             $schedule->call(function() {
                 BulbDiscovery::dispatchSync();
+            })->everyMinute();
+            $schedule->call(function() {
+                (new BulbStatusCheck())->handle();
             })->everyMinute();
         });
     }
