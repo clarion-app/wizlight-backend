@@ -129,6 +129,9 @@ class BulbStatusCheckTest extends TestCase
     /** @test */
     public function db_state_equals_mock_transport_response_after_check()
     {
+        // Use sync queue driver so dispatched jobs execute immediately.
+        $this->app['config']->set('queue.default', 'sync');
+
         $bulb = Bulb::create([
             'id' => (string) \Illuminate\Support\Str::uuid(),
             'local_node_id' => (string) \Illuminate\Support\Str::uuid(),

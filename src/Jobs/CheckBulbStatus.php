@@ -2,13 +2,19 @@
 
 namespace ClarionApp\WizlightBackend\Jobs;
 
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
 
-class CheckBulbStatus
+class CheckBulbStatus implements ShouldQueue
 {
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
     public string $bulbId;
     private ?UdpTransport $transport;
 

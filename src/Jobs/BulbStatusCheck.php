@@ -20,8 +20,10 @@ class BulbStatusCheck
         try {
             $bulbs = Bulb::all();
 
+            // FR-006: dispatch all per-bulb jobs in parallel so the 2-second UDP
+            // timeout applies per-light, not to the total duration.
             foreach ($bulbs as $bulb) {
-                Bus::dispatchSync(new CheckBulbStatus((string) $bulb->id));
+                Bus::dispatch(new CheckBulbStatus((string) $bulb->id));
             }
         } finally {
             $lock->release();
