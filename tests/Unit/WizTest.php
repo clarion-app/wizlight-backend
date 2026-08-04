@@ -5,6 +5,7 @@ namespace ClarionApp\WizlightBackend\Tests\Unit;
 use Orchestra\Testbench\TestCase;
 use ClarionApp\WizlightBackend\Wiz;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
+use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\RGBColor;
 
 class WizTest extends TestCase
@@ -19,10 +20,22 @@ class WizTest extends TestCase
     protected function defineEnvironment($app)
     {
         $app['config']->set('app.url', 'http://localhost');
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
         $app['config']->set('wizlight.broadcast_address', '255.255.255.255');
         $app['config']->set('wizlight.udp_wait_time', 30.0);
         $app['config']->set('wizlight.phone_mac', 'AAAAAAAAAAAA');
         $app['config']->set('wizlight.udp_port', 38899);
+        $app['config']->set('eloquent-multichain-bridge.disabled', true);
+    }
+
+    protected function defineDatabaseMigrations()
+    {
+        $this->loadMigrationsFrom(__DIR__ . '/../../src/Migrations');
     }
     private function makeMockTransport(?array $receiveResponse = null): UdpTransport
     {
@@ -233,5 +246,93 @@ class WizTest extends TestCase
         $wiz->discover();
 
         $this->assertEquals(['192.168.1.255'], $sentTargets);
+    }
+
+    /** @test */
+    public function get_pilot_state_updates_signal_when_only_signal_changes()
+    {
+        $transport = $this->createMock(UdpTransport::class);
+        $transport->method('receive')->willReturn([
+            [
+                'result' => [
+                    'mac' => 'AA:BB:CC:DD:EE:FF',
+                    'state' => true,
+                    'dimming' => 80,
+                    'r' => 100,
+                    'g' => 150,
+                    'b' => 200,
+                    'rssi' => -40,
+                ],
+                'from' => '192.168.1.50',
+            ],
+        ]);
+
+        $bulb = Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:FF',
+            'ip' => '192.168.1.50',
+            'name' => 'Test Bulb',
+            'state' => true,
+            'dimming' => 80,
+            'red' => 100,
+            'green' => 150,
+            'blue' => 200,
+            'signal' => -70,
+        ]);
+
+        $wiz = new Wiz(transport: $transport);
+        $wiz->get_pilot_state('192.168.1.50');
+
+        $bulb->refresh();
+        $this->assertEquals(-40, $bulb->signal, 'Signal should be updated when only signal changes');
+        $this->assertTrue((bool) $bulb->state, 'State should remain unchanged');
+        $this->assertEquals(80, $bulb->dimming, 'Dimming should remain unchanged');
+        $this->assertEquals(100, $bulb->red, 'Red should remain unchanged');
+        $this->assertEquals(150, $bulb->green, 'Green should remain unchanged');
+        $this->assertEquals(200, $bulb->blue, 'Blue should remain unchanged');
+    }
+
+    /** @test */
+    public function get_pilot_state_skips_save_when_nothing_changes()
+    {
+        $transport = $this->createMock(UdpTransport::class);
+        $transport->method('receive')->willReturn([
+            [
+                'result' => [
+                    'mac' => 'AA:BB:CC:DD:EE:AA',
+                    'state' => false,
+                    'dimming' => 50,
+                    'r' => 255,
+                    'g' => 200,
+                    'b' => 100,
+                    'rssi' => -55,
+                ],
+                'from' => '192.168.1.60',
+            ],
+        ]);
+
+        $bulb = Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:AA',
+            'ip' => '192.168.1.60',
+            'name' => 'Test Bulb',
+            'state' => false,
+            'dimming' => 50,
+            'red' => 255,
+            'green' => 200,
+            'blue' => 100,
+            'signal' => -55,
+        ]);
+
+        $originalUpdatedAt = $bulb->updated_at;
+        sleep(1);
+
+        $wiz = new Wiz(transport: $transport);
+        $wiz->get_pilot_state('192.168.1.60');
+
+        $bulb->refresh();
+        $this->assertEquals($originalUpdatedAt, $bulb->updated_at, 'Bulb should not be saved when no attributes change');
     }
 }
