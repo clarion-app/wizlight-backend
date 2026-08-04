@@ -3,9 +3,13 @@
 namespace ClarionApp\WizlightBackend\Tests\Unit;
 
 use Orchestra\Testbench\TestCase;
+use ClarionApp\WizlightBackend\Controllers\RoomController;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
+use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
+use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 
@@ -20,86 +24,165 @@ class RoomControllerTest extends TestCase
 
     protected function defineEnvironment($app)
     {
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
         $app['config']->set('clarion.node_id', 'test-node-id');
+        $app['config']->set('eloquent-multichain-bridge.disabled', true);
     }
 
-    private function makeBulbMock(array $attrs = []): Bulb
+    protected function defineDatabaseMigrations()
     {
-        $defaults = [
-            'state' => true,
-            'red' => 255,
-            'green' => 0,
-            'blue' => 0,
-            'dimming' => 75,
-            'temperature' => 2700,
-            'ip' => '192.168.1.10',
-            'local_node_id' => 'other-node',
-        ];
-        $data = array_merge($defaults, $attrs);
-
-        $bulb = $this->getMockBuilder(Bulb::class)
-            ->onlyMethods(['save', 'getAttribute', 'setAttribute'])
-            ->getMock();
-
-        $storage = $data;
-
-        $bulb->method('getAttribute')->willReturnCallback(function ($key) use (&$storage) {
-            return $storage[$key] ?? null;
-        });
-
-        $bulb->method('setAttribute')->willReturnCallback(function ($key, $value) use (&$storage, $bulb) {
-            $storage[$key] = $value;
-            return $bulb;
-        });
-
-        return $bulb;
+        $this->loadMigrationsFrom(__DIR__ . '/../../src/Migrations');
     }
 
-    private function makeRoomMock(array $attrs = [], $bulbs = null): Room
+    private function createRoom(array $attrs = []): Room
     {
         $defaults = [
-            'state' => true,
+            'name' => 'Test Room',
+            'state' => false,
             'red' => 255,
             'green' => 0,
             'blue' => 0,
             'dimming' => 50,
             'temperature' => 2700,
-            'name' => 'Test Room',
             'local_node_id' => 'other-node',
         ];
         $data = array_merge($defaults, $attrs);
-        $bulbCollection = $bulbs ?? collect([]);
+        return Room::create($data);
+    }
 
-        $room = $this->getMockBuilder(Room::class)
-            ->onlyMethods(['save', 'getAttribute', 'setAttribute'])
-            ->getMock();
+    private function createBulb(array $attrs = []): Bulb
+    {
+        $defaults = [
+            'mac' => 'aa:bb:cc:dd:ee:02',
+            'ip' => '192.168.1.11',
+            'name' => 'Room Bulb',
+            'state' => false,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 2700,
+            'local_node_id' => 'other-node',
+            'room_id' => null,
+        ];
+        $data = array_merge($defaults, $attrs);
+        return Bulb::create($data);
+    }
 
-        $storage = $data;
+    private function makeController(): RoomController
+    {
+        Bus::fake();
+        Event::fake();
+        return new RoomController(new WizlightService());
+    }
 
-        $room->method('getAttribute')->willReturnCallback(function ($key) use (&$storage, $bulbCollection) {
-            if ($key === 'bulbs') return $bulbCollection;
-            return $storage[$key] ?? null;
+    /** @test */
+    public function update_returns_immediately_with_updated_room_state()
+    {
+        $room = $this->createRoom(['state' => false]);
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'room_id' => (string) $room->id,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $result = $controller->update($request, (string) $room->id);
+
+        $this->assertTrue($result->state);
+        Bus::assertDispatched(SendBulbCommand::class);
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_dispatches_command_per_local_bulb()
+    {
+        $room = $this->createRoom(['state' => false]);
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'room_id' => (string) $room->id,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $room->id);
+
+        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+            return $job->bulbId === (string) $bulb->id;
         });
+    }
 
-        $room->method('setAttribute')->willReturnCallback(function ($key, $value) use (&$storage, $room) {
-            $storage[$key] = $value;
-            return $room;
-        });
+    /** @test */
+    public function update_skips_dispatch_for_remote_bulbs()
+    {
+        $room = $this->createRoom(['state' => false]);
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+        ]);
 
-        return $room;
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $room->id);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
+    }
+
+    /** @test */
+    public function update_fires_bulb_status_event_per_changed_bulb()
+    {
+        $room = $this->createRoom(['state' => false]);
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'room_id' => (string) $room->id,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $room->id);
+
+        Event::assertDispatched(BulbStatusEvent::class);
     }
 
     /** @test */
     public function update_preserves_room_dimming_when_omitted()
     {
-        Bus::fake();
-        Event::fake();
-        $service = new WizlightService();
+        $room = $this->createRoom(['dimming' => 50, 'red' => 255]);
 
-        $room = $this->makeRoomMock(['dimming' => 50], collect([]));
-        $room->expects($this->once())->method('save');
+        $controller = $this->makeController();
 
-        $result = $service->updateRoomState($room, ['red' => 100]);
+        $request = Request::create('/', 'PUT', [
+            'red' => 100,
+        ]);
+
+        $result = $controller->update($request, (string) $room->id);
 
         $this->assertEquals(50, $result->dimming);
     }
@@ -107,18 +190,35 @@ class RoomControllerTest extends TestCase
     /** @test */
     public function update_preserves_bulb_brightness_when_dimming_omitted()
     {
-        Bus::fake();
-        Event::fake();
-        $service = new WizlightService();
+        $room = $this->createRoom(['dimming' => 75, 'red' => 255]);
+        $bulb = $this->createBulb([
+            'dimming' => 75,
+            'red' => 255,
+            'room_id' => (string) $room->id,
+        ]);
 
-        $bulb = $this->makeBulbMock(['dimming' => 75]);
-        $bulb->expects($this->once())->method('save');
+        $controller = $this->makeController();
 
-        $room = $this->makeRoomMock(['dimming' => 75], collect([$bulb]));
-        $room->expects($this->once())->method('save');
+        $request = Request::create('/', 'PUT', [
+            'red' => 100,
+        ]);
 
-        $result = $service->updateRoomState($room, ['red' => 100]);
+        $result = $controller->update($request, (string) $room->id);
 
-        $this->assertEquals(75, $bulb->dimming);
+        $this->assertEquals(75, $bulb->fresh()->dimming);
+    }
+
+    /** @test */
+    public function update_returns_404_when_room_not_found()
+    {
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $response = $controller->update($request, 'nonexistent-id');
+
+        $this->assertEquals(404, $response->status());
     }
 }

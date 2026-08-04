@@ -4,11 +4,15 @@ namespace ClarionApp\WizlightBackend\Controllers;
 
 use ClarionApp\WizlightBackend\Models\Room;
 use Illuminate\Http\Request;
-use App\Http\Controllers\Controller;
+use Illuminate\Routing\Controller;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 
 class RoomController extends Controller
 {
+    public function __construct(
+        protected WizlightService $service,
+    ) {}
+
     /**
      * Display a listing of rooms with their bulbs.
      */
@@ -41,7 +45,7 @@ class RoomController extends Controller
         if(!$room) {
             return response()->json(['message' => 'Room not found'], 404);
         }
-        
+
         return $room->load('bulbs');
     }
 
@@ -65,8 +69,7 @@ class RoomController extends Controller
             return response()->json(['message' => 'Room not found'], 404);
         }
 
-        $service = new WizlightService();
-        return $service->updateRoomState($room, $validated);
+        return $this->service->updateRoomState($room, $validated);
     }
 
     /**

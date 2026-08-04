@@ -3,8 +3,12 @@
 namespace ClarionApp\WizlightBackend\Tests\Unit;
 
 use Orchestra\Testbench\TestCase;
+use ClarionApp\WizlightBackend\Controllers\BulbController;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
+use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 
@@ -19,53 +23,161 @@ class BulbControllerTest extends TestCase
 
     protected function defineEnvironment($app)
     {
+        $app['config']->set('database.default', 'testing');
+        $app['config']->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
         $app['config']->set('clarion.node_id', 'test-node-id');
+        $app['config']->set('eloquent-multichain-bridge.disabled', true);
     }
 
-    private function makeBulbMock(array $attrs = []): Bulb
+    protected function defineDatabaseMigrations()
+    {
+        $this->loadMigrationsFrom(__DIR__ . '/../../src/Migrations');
+    }
+
+    private function createBulb(array $attrs = []): Bulb
     {
         $defaults = [
-            'state' => true,
+            'mac' => 'aa:bb:cc:dd:ee:01',
+            'ip' => '192.168.1.10',
+            'name' => 'Test Bulb',
+            'state' => false,
             'red' => 255,
             'green' => 0,
             'blue' => 0,
             'dimming' => 50,
             'temperature' => 2700,
-            'name' => 'Test Bulb',
-            'room_id' => null,
-            'ip' => '192.168.1.10',
             'local_node_id' => 'other-node',
         ];
         $data = array_merge($defaults, $attrs);
+        return Bulb::create($data);
+    }
 
-        $bulb = $this->getMockBuilder(Bulb::class)
-            ->onlyMethods(['save', 'getAttribute', 'setAttribute'])
-            ->getMock();
+    private function makeController(): BulbController
+    {
+        Bus::fake();
+        Event::fake();
+        return new BulbController(new WizlightService());
+    }
 
-        $storage = $data;
+    /** @test */
+    public function update_returns_immediately_with_updated_state()
+    {
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+        ]);
 
-        $bulb->method('getAttribute')->willReturnCallback(function ($key) use (&$storage) {
-            return $storage[$key] ?? null;
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
+
+        $this->assertTrue($result->state);
+        Bus::assertDispatched(SendBulbCommand::class);
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_dispatches_command_for_local_node_bulb()
+    {
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+            return $job->bulbId === (string) $bulb->id && $job->ip === '192.168.1.10';
         });
+    }
 
-        $bulb->method('setAttribute')->willReturnCallback(function ($key, $value) use (&$storage, $bulb) {
-            $storage[$key] = $value;
-            return $bulb;
-        });
+    /** @test */
+    public function update_skips_dispatch_for_remote_node_bulb()
+    {
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'other-node',
+        ]);
 
-        return $bulb;
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
+    }
+
+    /** @test */
+    public function update_fires_bulb_status_event_on_change()
+    {
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_no_dispatch_when_state_unchanged()
+    {
+        $bulb = $this->createBulb([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'state' => false,
+        ]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
     }
 
     /** @test */
     public function update_preserves_dimming_when_omitted()
     {
-        Bus::fake();
-        Event::fake();
-        $service = new WizlightService();
-        $bulb = $this->makeBulbMock(['dimming' => 50]);
-        $bulb->expects($this->once())->method('save');
+        $bulb = $this->createBulb([
+            'dimming' => 50,
+            'red' => 255,
+        ]);
 
-        $result = $service->updateBulbState($bulb, ['red' => 100, 'green' => 200]);
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'red' => 100,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
 
         $this->assertEquals(50, $result->dimming);
     }
@@ -73,26 +185,30 @@ class BulbControllerTest extends TestCase
     /** @test */
     public function update_sets_dimming_when_explicitly_provided()
     {
-        Bus::fake();
-        Event::fake();
-        $service = new WizlightService();
-        $bulb = $this->makeBulbMock(['dimming' => 50]);
-        $bulb->expects($this->once())->method('save');
+        $bulb = $this->createBulb(['dimming' => 50]);
 
-        $result = $service->updateBulbState($bulb, ['dimming' => 75]);
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'dimming' => 75,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
 
         $this->assertEquals(75, $result->dimming);
     }
 
     /** @test */
-    public function update_validates_room_id_rejects_invalid()
+    public function update_returns_404_when_bulb_not_found()
     {
-        $rules = [
-            'room_id' => 'nullable|uuid|exists:wizlight_rooms,id',
-        ];
+        $controller = $this->makeController();
 
-        $this->assertStringContainsString('exists:wizlight_rooms,id', $rules['room_id']);
-        $this->assertStringContainsString('uuid', $rules['room_id']);
-        $this->assertStringContainsString('nullable', $rules['room_id']);
+        $request = Request::create('/', 'PUT', [
+            'state' => true,
+        ]);
+
+        $response = $controller->update($request, 'nonexistent-id');
+
+        $this->assertEquals(404, $response->status());
     }
 }

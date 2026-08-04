@@ -4,12 +4,15 @@ namespace ClarionApp\WizlightBackend\Controllers;
 
 use ClarionApp\WizlightBackend\Models\Bulb;
 use Illuminate\Http\Request;
-use App\Http\Controllers\Controller;
+use Illuminate\Routing\Controller;
 use ClarionApp\WizlightBackend\Services\WizlightService;
-
 
 class BulbController extends Controller
 {
+    public function __construct(
+        protected WizlightService $service,
+    ) {}
+
     /**
      * Display a list of all bulbs.
      * @response Bulb[]
@@ -43,8 +46,7 @@ class BulbController extends Controller
             return response()->json(['message' => 'Bulb not found'], 404);
         }
 
-        $service = new WizlightService();
-        return $service->updateBulbState($bulb, $validated);
+        return $this->service->updateBulbState($bulb, $validated);
     }
 
     /**
