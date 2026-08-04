@@ -11,5 +11,5 @@ Route::group(['middleware'=>['auth:api'], 'prefix'=>$this->routePrefix ], functi
 });
 
 Broadcast::channel('clarion-app-wizlights', function ($user) {
-    return true;
+    return (bool) $user;
 });

@@ -3,40 +3,52 @@
 namespace ClarionApp\WizlightBackend\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
+use ClarionApp\WizlightBackend\Controllers\RoomController;
 
 class RoutesTest extends TestCase
 {
     /** @test */
-    public function all_routes_are_within_auth_api_middleware_group()
+    public function routes_file_registers_bulb_resource_without_store_and_show()
     {
-        // Read the Routes.php file and verify the middleware group
         $routesContent = file_get_contents(__DIR__ . '/../../src/Routes.php');
 
-        // Verify auth:api middleware wraps all routes
-        $this->assertStringContainsString("'middleware'=>['auth:api']", $routesContent);
-
-        // Verify resource routes are inside the middleware group
+        // Bulb resource route must be registered
         $this->assertStringContainsString("Route::resource('bulb'", $routesContent);
-        $this->assertStringContainsString("Route::resource('room'", $routesContent);
-    }
-
-    /** @test */
-    public function bulb_store_and_show_routes_are_excluded()
-    {
-        $routesContent = file_get_contents(__DIR__ . '/../../src/Routes.php');
-
-        // Verify bulb resource excludes store and show
+        // store and show must be excluded
         $this->assertStringContainsString("->except(['store', 'show'])", $routesContent);
     }
 
     /** @test */
-    public function room_addBulb_and_removeBulb_methods_do_not_exist()
+    public function routes_file_registers_room_resource()
     {
-        $controllerContent = file_get_contents(__DIR__ . '/../../src/Controllers/RoomController.php');
+        $routesContent = file_get_contents(__DIR__ . '/../../src/Routes.php');
 
-        $this->assertStringNotContainsString('function addBulb', $controllerContent,
-            'RoomController should not contain addBulb method');
-        $this->assertStringNotContainsString('function removeBulb', $controllerContent,
-            'RoomController should not contain removeBulb method');
+        $this->assertStringContainsString("Route::resource('room'", $routesContent);
+    }
+
+    /** @test */
+    public function routes_are_protected_by_auth_api_middleware()
+    {
+        $routesContent = file_get_contents(__DIR__ . '/../../src/Routes.php');
+
+        $this->assertStringContainsString("'middleware'=>['auth:api']", $routesContent);
+    }
+
+    /** @test */
+    public function broadcast_channel_is_registered_for_clarion_app_wizlights()
+    {
+        $routesContent = file_get_contents(__DIR__ . '/../../src/Routes.php');
+
+        $this->assertStringContainsString("Broadcast::channel('clarion-app-wizlights'", $routesContent);
+    }
+
+    /** @test */
+    public function room_controller_has_no_addBulb_or_removeBulb_methods()
+    {
+        $reflection = new \ReflectionClass(RoomController::class);
+        $methods = array_map(fn($m) => $m->getName(), $reflection->getMethods());
+
+        $this->assertNotContains('addBulb', $methods, 'RoomController should not contain addBulb method');
+        $this->assertNotContains('removeBulb', $methods, 'RoomController should not contain removeBulb method');
     }
 }
