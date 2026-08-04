@@ -5,7 +5,7 @@ namespace ClarionApp\WizlightBackend\Services;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
-use ClarionApp\WizlightBackend\Wiz;
+use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
 
 class WizlightService
 {
@@ -64,7 +64,7 @@ class WizlightService
 
         if (config('clarion.node_id') == $bulb->local_node_id) {
             $command = $this->buildCommand($bulb);
-            (new Wiz())->send_udp($command, $bulb->ip);
+            SendBulbCommand::dispatch($bulb->ip, $command, (string) $bulb->id);
         }
 
         event(new BulbStatusEvent($bulb));
@@ -162,7 +162,7 @@ class WizlightService
 
                 if (config('clarion.node_id') == $bulb->local_node_id) {
                     $command = $this->buildCommand($bulb);
-                    (new Wiz())->send_udp($command, $bulb->ip);
+                    SendBulbCommand::dispatch($bulb->ip, $command, (string) $bulb->id);
                 }
 
                 event(new BulbStatusEvent($bulb));

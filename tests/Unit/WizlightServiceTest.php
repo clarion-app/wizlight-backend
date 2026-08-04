@@ -6,6 +6,8 @@ use Orchestra\Testbench\TestCase;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
+use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
+use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 
@@ -32,6 +34,7 @@ class WizlightServiceTest extends TestCase
     private function makeBulbMock(array $attrs = []): Bulb
     {
         $defaults = [
+            'id' => 'bulb-uuid-1',
             'state' => false,
             'red' => 255,
             'green' => 255,
@@ -60,7 +63,6 @@ class WizlightServiceTest extends TestCase
             return $bulb;
         });
 
-        // Seed the mock's internal storage
         foreach ($data as $k => $v) {
             $storage[$k] = $v;
         }
@@ -136,13 +138,87 @@ class WizlightServiceTest extends TestCase
     }
 
     /** @test */
+    public function updateBulbState_dispatches_send_bulb_command_for_local_node()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'id' => 'bulb-uuid-dispatch',
+        ]);
+        $bulb->expects($this->once())->method('save');
+
+        $service->updateBulbState($bulb, ['state' => true]);
+
+        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+            return $job->ip === '192.168.1.10' && $job->bulbId === 'bulb-uuid-dispatch';
+        });
+    }
+
+    /** @test */
+    public function updateBulbState_skips_dispatch_for_remote_node()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'other-node',
+        ]);
+        $bulb->expects($this->once())->method('save');
+
+        $service->updateBulbState($bulb, ['state' => true]);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
+    }
+
+    /** @test */
+    public function updateBulbState_dispatches_no_command_when_no_state_change()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'name' => 'Test Bulb',
+        ]);
+
+        $result = $service->updateBulbState($bulb, ['state' => false]);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
+    }
+
+    /** @test */
+    public function updateBulbState_fires_bulb_status_event_on_change()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock(['state' => false, 'local_node_id' => 'test-node-id']);
+        $bulb->expects($this->once())->method('save');
+
+        $service->updateBulbState($bulb, ['state' => true]);
+
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
     public function updateRoomState_updates_room_and_child_bulbs()
     {
         Bus::fake();
         Event::fake();
         $service = new WizlightService();
 
-        $bulb1 = $this->makeBulbMock(['state' => false]);
+        $bulb1 = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'id' => 'bulb-room-1',
+        ]);
         $bulb1->expects($this->once())->method('save');
 
         $room = $this->makeRoomMock(['state' => false], collect([$bulb1]));
@@ -150,6 +226,52 @@ class WizlightServiceTest extends TestCase
 
         $result = $service->updateRoomState($room, ['state' => true]);
         $this->assertTrue($result->state);
+    }
+
+    /** @test */
+    public function updateRoomState_dispatches_send_bulb_command_per_local_bulb()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        $bulb1 = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'id' => 'bulb-room-local',
+        ]);
+        $bulb1->expects($this->once())->method('save');
+
+        $room = $this->makeRoomMock(['state' => false], collect([$bulb1]));
+        $room->expects($this->once())->method('save');
+
+        $service->updateRoomState($room, ['state' => true]);
+
+        Bus::assertDispatched(SendBulbCommand::class, function ($job) {
+            return $job->bulbId === 'bulb-room-local';
+        });
+    }
+
+    /** @test */
+    public function updateRoomState_skips_dispatch_for_remote_bulbs()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        $bulb1 = $this->makeBulbMock([
+            'state' => false,
+            'local_node_id' => 'other-node',
+        ]);
+        $bulb1->expects($this->once())->method('save');
+
+        $room = $this->makeRoomMock(['state' => false], collect([$bulb1]));
+        $room->expects($this->once())->method('save');
+
+        $service->updateRoomState($room, ['state' => true]);
+
+        Bus::assertNotDispatched(SendBulbCommand::class);
     }
 
     /** @test */

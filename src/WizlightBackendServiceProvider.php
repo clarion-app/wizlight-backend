@@ -21,6 +21,12 @@ class WizlightBackendServiceProvider extends ClarionPackageServiceProvider
 
         $this->mergeConfigFrom(__DIR__.'/../config/wizlight.php', 'wizlight');
 
+        $this->app->singleton(\ClarionApp\WizlightBackend\Transport\UdpTransport::class, function ($app) {
+            $broadcastAddress = $app['config']->get('wizlight.broadcast_address', '255.255.255.255');
+            $udpPort = $app['config']->get('wizlight.udp_port', 38899);
+            return new \ClarionApp\WizlightBackend\Transport\SocketUdpTransport($broadcastAddress, $udpPort);
+        });
+
         $this->commands([
             WizlightDiscover::class,
         ]);
