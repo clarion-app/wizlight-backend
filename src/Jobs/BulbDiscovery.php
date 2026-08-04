@@ -62,7 +62,12 @@ class BulbDiscovery implements ShouldQueue
 
             if ($existing) {
                 if ($existing->local_node_id !== $local_node_id) {
-                    continue;
+                    $lapsed = $this->isOwnerLapsed($existing);
+                    if (!$lapsed) {
+                        continue;
+                    }
+                    $existing->local_node_id = $local_node_id;
+                    $existing->save();
                 }
 
                 $updates = [
@@ -113,5 +118,12 @@ class BulbDiscovery implements ShouldQueue
 
             event(new BulbStatusEvent($b));
         }
+    }
+
+    private function isOwnerLapsed(Bulb $bulb): bool
+    {
+        $lapseHours = (int) config('wizlight.ownership.lapse_hours', 24);
+        $lapseThreshold = now()->subHours($lapseHours);
+        return $bulb->updated_at <= $lapseThreshold;
     }
 }

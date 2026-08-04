@@ -288,4 +288,98 @@ class BulbDiscoveryTest extends TestCase
         $this->assertEquals('192.168.1.21', $bulb->ip, 'IP should be updated');
         $this->assertEquals($thisNode, $bulb->local_node_id);
     }
+
+    /** @test */
+    public function lapsed_node_ownership_is_reclaimed()
+    {
+        config(['wizlight.ownership.lapse_hours' => 24]);
+
+        $otherNodeId = (string) \Illuminate\Support\Str::uuid();
+        $existingBulb = Bulb::create([
+            'local_node_id' => $otherNodeId,
+            'mac' => 'AA:BB:CC:DD:EE:06',
+            'ip' => '192.168.1.30',
+            'name' => 'Lapsed Bulb',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -55,
+        ]);
+
+        $existingBulb->updated_at = now()->subHours(25);
+        $existingBulb->save();
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:06',
+                'ip' => '192.168.1.31',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:06', 'state' => true, 'dimming' => 60, 'r' => 100, 'g' => 200, 'b' => 50, 'rssi' => -42], 'from' => '192.168.1.31'],
+                ],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        $job = new BulbDiscovery();
+        $job->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:06')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals('test-node-001', $bulb->local_node_id, 'Ownership should be reclaimed from lapsed node');
+        $this->assertEquals('192.168.1.31', $bulb->ip, 'IP should be updated after reclaim');
+    }
+
+    /** @test */
+    public function active_node_ownership_is_not_reclaimed()
+    {
+        config(['wizlight.ownership.lapse_hours' => 24]);
+
+        $otherNodeId = (string) \Illuminate\Support\Str::uuid();
+        $originalIp = '192.168.1.40';
+        $originalState = false;
+        $originalDimming = 100;
+        Bulb::create([
+            'local_node_id' => $otherNodeId,
+            'mac' => 'AA:BB:CC:DD:EE:07',
+            'ip' => $originalIp,
+            'name' => 'Active Owner Bulb',
+            'state' => $originalState,
+            'dimming' => $originalDimming,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -55,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:07',
+                'ip' => '192.168.1.41',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:07', 'state' => true, 'dimming' => 50, 'r' => 255, 'g' => 0, 'b' => 0, 'rssi' => -40], 'from' => '192.168.1.41'],
+                ],
+                'sysconfig_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        $job = new BulbDiscovery();
+        $job->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:07')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals($otherNodeId, $bulb->local_node_id, 'Ownership should not change for active node');
+        $this->assertEquals($originalIp, $bulb->ip, 'IP should not be updated when skipped');
+        $this->assertEquals($originalState, (bool) $bulb->state, 'State should not be updated when skipped');
+        $this->assertEquals($originalDimming, $bulb->dimming, 'Dimming should not be updated when skipped');
+    }
 }
