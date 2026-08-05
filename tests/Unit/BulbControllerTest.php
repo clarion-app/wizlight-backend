@@ -552,4 +552,74 @@ class BulbControllerTest extends TestCase
             throw $e;
         }
     }
+
+    // ------------------------------------------------------------------
+    // Phase 3 (US1): scene_id capability validation in controller
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_scene_id_on_tunable_white_bulb_when_unsupported()
+    {
+        // Ocean (1) is full_colour only. A tunable_white bulb should reject it.
+        $bulb = $this->createBulb([
+            'capability_class' => 'tunable_white',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'scene_id' => 1,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_id', $errors);
+            // Error message should name the scene and the class.
+            $this->assertStringContainsString('Ocean', $errors['scene_id'][0]);
+            $this->assertStringContainsString('tunable_white', $errors['scene_id'][0]);
+            // Nothing should be saved or dispatched on rejection.
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_accepts_scene_id_on_full_colour_bulb_and_dispatches_sceneId()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'active_mode' => 'rgb',
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'scene',
+            'scene_id' => 1,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
+
+        $this->assertEquals(1, $result->scene_id);
+        $this->assertEquals('scene', $result->active_mode);
+
+        // The dispatched command should contain sceneId inside params (command is a stdClass object).
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) {
+            return isset($job->command->params->sceneId) && $job->command->params->sceneId === 1;
+        });
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
 }

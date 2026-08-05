@@ -505,4 +505,182 @@ class DeviceCapabilityValidatorTest extends TestCase
         $activeModeSkips = array_filter($skips, fn ($s) => $s['field'] === 'active_mode');
         $this->assertCount(0, $activeModeSkips);
     }
+
+    // ------------------------------------------------------------------
+    // US1: scene_id rejected when unsupported by device class
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function scene_id_rejected_on_tunable_white_when_unsupported()
+    {
+        // Ocean (1) is full_colour only. A tunable_white device must reject it.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['scene_id' => 1]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_id', $errors);
+            // Error message should name the scene and the class.
+            $this->assertStringContainsString('Ocean', $errors['scene_id'][0]);
+            $this->assertStringContainsString('tunable_white', $errors['scene_id'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function scene_id_rejected_when_unknown()
+    {
+        // Scene 57 is not in the catalogue at all.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['scene_id' => 57]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_id', $errors);
+            // Error message should reference the unknown ID.
+            $this->assertStringContainsString('57', $errors['scene_id'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function scene_id_accepted_on_compatible_device()
+    {
+        // Ocean (1) is supported by full_colour devices.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['scene_id' => 1]);
+            $this->assertTrue(true, 'scene_id=1 must be accepted on a full_colour device.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    /** @test */
+    public function scene_id_accepted_on_tunable_white_when_supported()
+    {
+        // Wake-up (9) is supported by tunable_white devices.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['scene_id' => 9]);
+            $this->assertTrue(true, 'scene_id=9 must be accepted on a tunable_white device.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: scene_id filtered for incompatible bulbs
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function filterForRoom_records_skip_for_scene_id_on_incompatible_bulb()
+    {
+        // Ocean (1) is full_colour only. A tunable_white bulb should skip it.
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-tw-scene-skip',
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+
+        $validated = [
+            'state' => true,
+            'active_mode' => 'scene',
+            'scene_id' => 1,
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        // scene_id should be dropped from applicable values.
+        $this->assertArrayNotHasKey('scene_id', $applicable);
+        // And recorded as a skip.
+        $sceneSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_id');
+        $this->assertCount(1, $sceneSkips);
+        $this->assertSame('bulb-tw-scene-skip', $sceneSkips[0]['bulb_id']);
+        // Skip reason should name the scene and the class.
+        $this->assertStringContainsString('Ocean', $sceneSkips[0]['reason']);
+        $this->assertStringContainsString('tunable_white', $sceneSkips[0]['reason']);
+    }
+
+    /** @test */
+    public function filterForRoom_records_skip_for_unknown_scene_id()
+    {
+        // Scene 57 is not in the catalogue — even a full_colour bulb should skip it.
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-fc-unknown-scene',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+
+        $validated = [
+            'scene_id' => 57,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayNotHasKey('scene_id', $applicable);
+        $sceneSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_id');
+        $this->assertCount(1, $sceneSkips);
+        $this->assertSame('bulb-fc-unknown-scene', $sceneSkips[0]['bulb_id']);
+        // Skip reason should reference the unknown ID.
+        $this->assertStringContainsString('57', $sceneSkips[0]['reason']);
+    }
+
+    /** @test */
+    public function filterForRoom_passes_scene_id_on_compatible_bulb()
+    {
+        // Wake-up (9) is supported by tunable_white devices.
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-tw-scene-pass',
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+
+        $validated = [
+            'scene_id' => 9,
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayHasKey('scene_id', $applicable);
+        $this->assertSame(9, $applicable['scene_id']);
+        $sceneSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_id');
+        $this->assertCount(0, $sceneSkips);
+    }
 }

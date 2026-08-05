@@ -170,6 +170,31 @@ class DeviceCapabilityValidator
             }
         }
 
+        // --- Scene ID (US1, T031) ---
+        // Reject scene_id when the scene is not supported by this device's class,
+        // or when the scene id is not in the catalogue at all.
+        if (isset($validated['scene_id'])) {
+            $sceneId = $validated['scene_id'];
+            $scene = SceneCatalogue::find($sceneId);
+
+            if ($scene === null) {
+                // Unknown scene ID — not in the catalogue.
+                $errors['scene_id'] = [
+                    sprintf('Scene %d is not in the catalogue', $sceneId),
+                ];
+            } elseif (!in_array($cc, $scene->classes, true)) {
+                // Scene exists but not for this capability class.
+                $errors['scene_id'] = [
+                    sprintf(
+                        "Scene '%s' (%d) is not supported by %s device",
+                        $scene->name,
+                        $sceneId,
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            }
+        }
+
         if (!empty($errors)) {
             self::throwValidationException($errors);
         }
@@ -355,6 +380,34 @@ class DeviceCapabilityValidator
                         $cc ?: 'unprobed'
                     ),
                 ];
+            }
+        }
+
+        // Scene ID: capability-gated (US1, T031)
+        if (array_key_exists('scene_id', $validated)) {
+            $sceneId = $validated['scene_id'];
+            $scene = SceneCatalogue::find($sceneId);
+
+            if ($scene === null) {
+                // Unknown scene ID — not in the catalogue.
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'scene_id',
+                    'reason' => sprintf('Scene %d is not in the catalogue', $sceneId),
+                ];
+            } elseif (!in_array($cc, $scene->classes, true)) {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'scene_id',
+                    'reason' => sprintf(
+                        "Scene '%s' (%d) is not supported by %s device",
+                        $scene->name,
+                        $sceneId,
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            } else {
+                $applicable['scene_id'] = $validated['scene_id'];
             }
         }
 
