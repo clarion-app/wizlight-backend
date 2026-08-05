@@ -561,6 +561,12 @@ class BulbDiscoveryTest extends TestCase
             'green' => 8,
             'blue' => 9,
             'signal' => -37,
+            'firmware_version' => '',
+            'capability_class' => 'dim_only',
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+            'wiz_room_id' => null,
+            'wiz_group_id' => null,
         ]);
         $originalUpdatedAt = $bulb->fresh()->updated_at;
 
@@ -588,9 +594,10 @@ class BulbDiscoveryTest extends TestCase
     }
 
     /** @test */
-    public function discovery_issues_exactly_two_unicast_round_trips_per_light()
+    public function discovery_issues_getModelConfig_and_conditional_getUserConfig_per_light()
     {
-        // SC-012 / FR-008b, asserted on the path production actually takes.
+        // getModelConfig is called per light; getUserConfig is called as fallback
+        // when model_config has no usable cctRange (no scripted response → empty).
         $transport = new FakeUdpTransport();
         $transport->willRespond(
             ['result' => ['mac' => 'AA:BB:CC:DD:EE:0D'], 'from' => '192.168.1.100'],
@@ -603,6 +610,220 @@ class BulbDiscoveryTest extends TestCase
 
         $this->assertSame(2, $transport->sendCountForMethod('getPilot'));
         $this->assertSame(2, $transport->sendCountForMethod('getSystemConfig'));
-        $this->assertSame(0, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig must not be on the discovery path');
+        $this->assertSame(2, $transport->sendCountForMethod('getModelConfig'), 'getModelConfig called per light');
+        $this->assertSame(2, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig called as fallback when model_config has no range');
+    }
+
+    /**
+     * Build discovery responses including getModelConfig and getUserConfig calls.
+     *
+     * Each bulb entry can carry:
+     * - model_config_response: array of datagrams for getModelConfig (or [] for timeout)
+     * - user_config_response: array of datagrams for getUserConfig fallback (or [] for no call)
+     */
+    private function buildExtendedDiscoveryResponses(array $bulbs): array
+    {
+        $responses = [];
+        $registrationResults = [];
+        foreach ($bulbs as $b) {
+            $registrationResults[] = [
+                'result' => ['mac' => $b['mac']],
+                'from' => $b['ip'],
+            ];
+        }
+        $responses[] = $registrationResults;
+
+        foreach ($bulbs as $b) {
+            $responses[] = $b['pilot_response'] ?? [];
+            $responses[] = $b['sysconfig_response'] ?? [];
+            $responses[] = $b['model_config_response'] ?? [];
+            $responses[] = $b['user_config_response'] ?? [];
+        }
+
+        return $responses;
+    }
+
+    /** @test */
+    public function discovery_records_full_colour_capability_from_rgb_module()
+    {
+        // Fixture: full-colour device from contracts/device-capability-protocol.md
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:01',
+                'ip' => '192.168.1.10',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'state' => true, 'dimming' => 80, 'r' => 255, 'g' => 120, 'b' => 0, 'rssi' => -55], 'from' => '192.168.1.10'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.10'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:01')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals('ESP01_SHRGB_03', $bulb->model);
+        $this->assertEquals('1.25.0', $bulb->firmware_version);
+        $this->assertEquals('full_colour', $bulb->capability_class);
+        $this->assertEquals(2200, $bulb->warmth_min_kelvin);
+        $this->assertEquals(6500, $bulb->warmth_max_kelvin);
+        $this->assertEquals(1, $bulb->wiz_room_id);
+        $this->assertEquals(2, $bulb->wiz_group_id);
+    }
+
+    /** @test */
+    public function discovery_records_tunable_white_capability_from_tw_module()
+    {
+        // Fixture: tunable-white device from contracts/device-capability-protocol.md
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:02',
+                'ip' => '192.168.1.11',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'state' => true, 'dimming' => 60, 'temperature' => 3000, 'rssi' => -62], 'from' => '192.168.1.11'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'moduleName' => 'ESP03_SHTW1_01ABI', 'fwVersion' => '1.22.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 3], 'from' => '192.168.1.11'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2200, 2700, 5000, 5500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:02')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals('ESP03_SHTW1_01ABI', $bulb->model);
+        $this->assertEquals('1.22.0', $bulb->firmware_version);
+        $this->assertEquals('tunable_white', $bulb->capability_class);
+        $this->assertEquals(2700, $bulb->warmth_min_kelvin);
+        $this->assertEquals(5000, $bulb->warmth_max_kelvin);
+        $this->assertEquals(1, $bulb->wiz_room_id);
+        $this->assertEquals(3, $bulb->wiz_group_id);
+    }
+
+    /** @test */
+    public function discovery_records_dim_only_capability_from_dw_module()
+    {
+        // Fixture: dim-only device from contracts/device-capability-protocol.md
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:03',
+                'ip' => '192.168.1.12',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:03', 'state' => true, 'dimming' => 45, 'rssi' => -70], 'from' => '192.168.1.12'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:03', 'moduleName' => 'ESP06_SHDW1_31', 'fwVersion' => '1.20.0', 'homeId' => 111, 'roomId' => 2, 'groupId' => 0], 'from' => '192.168.1.12'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:03')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals('ESP06_SHDW1_31', $bulb->model);
+        $this->assertEquals('1.20.0', $bulb->firmware_version);
+        $this->assertEquals('dim_only', $bulb->capability_class);
+        $this->assertNull($bulb->warmth_min_kelvin);
+        $this->assertNull($bulb->warmth_max_kelvin);
+        $this->assertEquals(2, $bulb->wiz_room_id);
+        $this->assertEquals(0, $bulb->wiz_group_id);
+    }
+
+    /** @test */
+    public function discovery_upgrades_unknown_model_to_tunable_white_via_user_config_range()
+    {
+        // Fixture: unknown model with warmth-range upgrade from contracts/device-capability-protocol.md
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:04',
+                'ip' => '192.168.1.13',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:04', 'state' => false, 'dimming' => 100, 'rssi' => -80], 'from' => '192.168.1.13'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:04', 'moduleName' => 'ESP99_XYZ1_01', 'fwVersion' => '0.9.9', 'homeId' => 111, 'roomId' => 3, 'groupId' => 1], 'from' => '192.168.1.13'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [
+                    ['result' => ['extRange' => [2700, 5000]]],
+                ],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:04')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals('ESP99_XYZ1_01', $bulb->model, 'Raw moduleName persisted verbatim (FR-001)');
+        $this->assertEquals('0.9.9', $bulb->firmware_version);
+        $this->assertEquals('tunable_white', $bulb->capability_class, 'Unknown name + non-equal range upgrades to tunable_white');
+        $this->assertEquals(2700, $bulb->warmth_min_kelvin);
+        $this->assertEquals(5000, $bulb->warmth_max_kelvin);
+        $this->assertEquals(3, $bulb->wiz_room_id);
+        $this->assertEquals(1, $bulb->wiz_group_id);
+    }
+
+    /** @test */
+    public function discovery_creates_bulb_with_fallback_values_when_getSystemConfig_times_out()
+    {
+        // Fixture: getSystemConfig times out (FR-015, partial data)
+        // from contracts/device-capability-protocol.md
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:05',
+                'ip' => '192.168.1.14',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:05', 'state' => true, 'dimming' => 50, 'rssi' => -65], 'from' => '192.168.1.14'],
+                ],
+                'sysconfig_response' => [],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:05')->first();
+        $this->assertNotNull($bulb, 'Device is still created even when getSystemConfig times out (FR-015)');
+        $this->assertEquals('', $bulb->firmware_version, 'Missing firmware_version defaults to empty string');
+        $this->assertEquals('dim_only', $bulb->capability_class, 'No moduleName → dim_only fallback');
+        $this->assertNull($bulb->warmth_min_kelvin);
+        $this->assertNull($bulb->warmth_max_kelvin);
+        $this->assertNull($bulb->wiz_room_id);
+        $this->assertNull($bulb->wiz_group_id);
     }
 }

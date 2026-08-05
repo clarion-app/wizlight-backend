@@ -139,11 +139,15 @@ class WizTest extends TestCase
             ['result' => ['mac' => 'AA:BB:CC:DD:EE:01'], 'from' => '192.168.1.10'],
             ['result' => ['mac' => 'AA:BB:CC:DD:EE:02'], 'from' => '192.168.1.11'],
         );
-        // Per-bulb getPilot / getSystemConfig, in order: bulb 1 then bulb 2.
+        // Per-bulb: getPilot, getSystemConfig, getModelConfig, getUserConfig (fallback).
         $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'state' => true], 'from' => '192.168.1.10']);
         $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'moduleName' => 'A19'], 'from' => '192.168.1.10']);
+        $transport->willRespondWithNothing();
+        $transport->willRespond(['result' => ['extRange' => [2700, 5000]]]);
         $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'state' => false], 'from' => '192.168.1.11']);
         $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'moduleName' => 'A60'], 'from' => '192.168.1.11']);
+        $transport->willRespondWithNothing();
+        $transport->willRespond(['result' => ['extRange' => [3000, 4500]]]);
 
         $wiz = new Wiz(transport: $transport);
         $results = $wiz->discover();
@@ -170,9 +174,10 @@ class WizTest extends TestCase
     }
 
     /** @test */
-    public function discover_issues_exactly_two_unicast_round_trips_per_light()
+    public function discover_issues_getModelConfig_and_conditional_getUserConfig_per_light()
     {
-        // SC-012 / FR-008b: getPilot and getSystemConfig, never getUserConfig.
+        // getModelConfig is called per light; getUserConfig is called as fallback
+        // when model_config has no usable cctRange (no scripted response → empty).
         $transport = new FakeUdpTransport();
         $transport->willRespond(
             ['result' => ['mac' => 'AA:BB:CC:DD:EE:01'], 'from' => '192.168.1.10'],
@@ -185,8 +190,8 @@ class WizTest extends TestCase
         $this->assertSame(1, $transport->sendCountForMethod('registration'), 'One broadcast per cycle');
         $this->assertSame(2, $transport->sendCountForMethod('getPilot'), 'One getPilot per light');
         $this->assertSame(2, $transport->sendCountForMethod('getSystemConfig'), 'One getSystemConfig per light');
-        $this->assertSame(0, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig must not be on the discovery path');
-        $this->assertSame(5, $transport->sendCount(), 'Two lights cost 1 broadcast + 2 × 2 unicast round trips');
+        $this->assertSame(2, $transport->sendCountForMethod('getModelConfig'), 'getModelConfig called per light');
+        $this->assertSame(2, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig called as fallback (no model_config range)');
     }
 
     /** @test */
@@ -263,5 +268,135 @@ class WizTest extends TestCase
         $wiz->discover();
 
         $this->assertEquals(['192.168.1.255'], $transport->sends()[0]['targets']);
+    }
+
+    /** @test */
+    public function get_model_config_decodes_4_element_cctRange_using_indices_1_and_2()
+    {
+        $transport = (new FakeUdpTransport())->willRespond([
+            'result' => ['cctRange' => [2000, 2200, 6500, 6500]],
+        ]);
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->get_model_config('192.168.1.50');
+
+        $this->assertEquals('getModelConfig', $transport->sends()[0]['message']->method);
+        $this->assertArrayHasKey('cctRange', $results[0]['result']);
+        $this->assertEquals(2200, $results[0]['result']['cctRange'][1], 'Index 1 is the enforced minimum');
+        $this->assertEquals(6500, $results[0]['result']['cctRange'][2], 'Index 2 is the enforced maximum');
+    }
+
+    /** @test */
+    public function get_model_config_decodes_2_element_cctRange_as_direct_min_max()
+    {
+        $transport = (new FakeUdpTransport())->willRespond([
+            'result' => ['cctRange' => [2700, 5000]],
+        ]);
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->get_model_config('192.168.1.50');
+
+        $this->assertCount(2, $results[0]['result']['cctRange']);
+        $this->assertEquals(2700, $results[0]['result']['cctRange'][0]);
+        $this->assertEquals(5000, $results[0]['result']['cctRange'][1]);
+    }
+
+    /** @test */
+    public function get_model_config_returns_empty_on_no_response()
+    {
+        $transport = (new FakeUdpTransport())->willRespondWithNothing();
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->get_model_config('192.168.1.50');
+
+        $this->assertIsArray($results);
+        $this->assertCount(0, $results);
+    }
+
+    /** @test */
+    public function get_model_config_returns_empty_on_unrecognised_cctRange_shape()
+    {
+        // 3-element or 1-element cctRange is not a shape the codec understands.
+        $transport = (new FakeUdpTransport())->willRespond([
+            'result' => ['cctRange' => [2700, 4000, 5000]],
+        ]);
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->get_model_config('192.168.1.50');
+
+        // The codec returns the raw response; the caller (BulbDiscovery) treats
+        // any non-2/non-4 length as "absent" when extracting warmth range.
+        $this->assertArrayHasKey('result', $results[0]);
+        $this->assertArrayHasKey('cctRange', $results[0]['result']);
+    }
+
+    /** @test */
+    public function discover_payload_includes_model_config_key()
+    {
+        $transport = new FakeUdpTransport();
+        // Registration: one bulb
+        $transport->willRespond(
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:01'], 'from' => '192.168.1.10'],
+        );
+        // Per-bulb: getPilot, getSystemConfig, getModelConfig (has range — no getUserConfig)
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'state' => true], 'from' => '192.168.1.10']);
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:01', 'moduleName' => 'ESP01_SHRGB_03'], 'from' => '192.168.1.10']);
+        $transport->willRespond(['result' => ['cctRange' => [2000, 2200, 6500, 6500]]]);
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->discover();
+
+        $this->assertCount(1, $results);
+        $this->assertArrayHasKey('model_config', $results[0], 'discover() payload must carry model_config key');
+    }
+
+    /** @test */
+    public function discover_payload_includes_user_config_key_when_model_config_has_no_range()
+    {
+        $transport = new FakeUdpTransport();
+        // Registration: one bulb
+        $transport->willRespond(
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:02'], 'from' => '192.168.1.11'],
+        );
+        // Per-bulb: getPilot, getSystemConfig, getModelConfig (no response), getUserConfig (fallback)
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'state' => false], 'from' => '192.168.1.11']);
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:02', 'moduleName' => 'ESP06_SHDW1_31'], 'from' => '192.168.1.11']);
+        $transport->willRespondWithNothing();
+        $transport->willRespond(['result' => ['extRange' => [2700, 5000]]]);
+
+        $wiz = new Wiz(transport: $transport);
+        $results = $wiz->discover();
+
+        $this->assertCount(1, $results);
+        $this->assertArrayHasKey('user_config', $results[0], 'discover() payload must carry user_config key when used as fallback');
+        $this->assertArrayHasKey('extRange', $results[0]['user_config']);
+    }
+
+    /** @test */
+    public function discover_issues_getModelConfig_then_conditional_getUserConfig_per_light()
+    {
+        // Two bulbs: first has a usable model_config (no getUserConfig needed),
+        // second has no model_config response (getUserConfig fallback fires).
+        $transport = new FakeUdpTransport();
+        // Registration
+        $transport->willRespond(
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:10'], 'from' => '192.168.1.20'],
+            ['result' => ['mac' => 'AA:BB:CC:DD:EE:11'], 'from' => '192.168.1.21'],
+        );
+        // Bulb 1: getPilot, getSystemConfig, getModelConfig (has range — no fallback)
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:10', 'state' => true], 'from' => '192.168.1.20']);
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:10', 'moduleName' => 'ESP01_SHRGB_03'], 'from' => '192.168.1.20']);
+        $transport->willRespond(['result' => ['cctRange' => [2000, 2200, 6500, 6500]]]);
+        // Bulb 2: getPilot, getSystemConfig, getModelConfig (no response), getUserConfig (fallback)
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:11', 'state' => false], 'from' => '192.168.1.21']);
+        $transport->willRespond(['result' => ['mac' => 'AA:BB:CC:DD:EE:11', 'moduleName' => 'ESP99_XYZ1_01'], 'from' => '192.168.1.21']);
+        $transport->willRespondWithNothing();
+        $transport->willRespond(['result' => ['extRange' => [2700, 5000]]]);
+
+        $wiz = new Wiz(transport: $transport);
+        $wiz->discover();
+
+        $this->assertSame(2, $transport->sendCountForMethod('getModelConfig'), 'getModelConfig called per light');
+        $this->assertSame(1, $transport->sendCountForMethod('getUserConfig'), 'getUserConfig called only for bulb 2 (fallback)');
     }
 }

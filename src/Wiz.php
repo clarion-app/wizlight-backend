@@ -41,11 +41,10 @@ class Wiz
     /**
      * Broadcast a registration request, then read state from each responder.
      *
-     * Exactly two unicast round trips per light — getPilot and getSystemConfig.
-     * getUserConfig is deliberately not called (FR-008b / SC-012): its result
-     * was discarded, and it cost a third of discovery's per-light network time.
+     * Per light: getPilot, getSystemConfig, getModelConfig, then getUserConfig
+     * as a conditional fallback when getModelConfig carries no usable cctRange.
      *
-     * @return array<int, array{mac: string, ip: string, pilot_state: array, system_config: array}>
+     * @return array<int, array{mac: string, ip: string, pilot_state: array, system_config: array, model_config?: array, user_config?: array}>
      */
     public function discover(): array
     {
@@ -68,12 +67,31 @@ class Wiz
                 continue;
             }
 
-            $bulbs[] = [
+            // getPilot and getSystemConfig first (existing callers expect this order).
+            $pilotState = $this->firstResultPayload($this->get_pilot_state($from));
+            $sysConfig = $this->firstResultPayload($this->get_system_config($from));
+
+            // Then getModelConfig for capability data.
+            $modelConfigResults = $this->get_model_config($from);
+            $modelConfig = $this->firstResultPayloadAny($modelConfigResults);
+
+            $bulb = [
                 'mac' => $mac,
                 'ip' => $from,
-                'pilot_state' => $this->firstResultPayload($this->get_pilot_state($from)),
-                'system_config' => $this->firstResultPayload($this->get_system_config($from)),
+                'pilot_state' => $pilotState,
+                'system_config' => $sysConfig,
+                'model_config' => $modelConfig,
             ];
+
+            // Fallback: if model_config has no usable cctRange, call getUserConfig.
+            if (!$this->hasUsableCctRange($modelConfig)) {
+                $userConfig = $this->firstResultPayloadAny($this->get_user_config($from));
+                if (!empty($userConfig)) {
+                    $bulb['user_config'] = $userConfig;
+                }
+            }
+
+            $bulbs[] = $bulb;
         }
 
         return $bulbs;
@@ -81,11 +99,30 @@ class Wiz
 
     /**
      * Pick the first datagram in a response set that carries a device payload.
+     *
+     * Requires a `mac` key in the result — appropriate for pilot, system_config,
+     * and user_config responses that always include the device identifier.
      */
     private function firstResultPayload(array $results): array
     {
         foreach ($results as $result) {
             if (isset($result['result']) && isset($result['result']['mac'])) {
+                return $result['result'];
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Pick the first result payload regardless of shape.
+     *
+     * Used for model_config and other responses that may not carry a `mac` field.
+     */
+    private function firstResultPayloadAny(array $results): array
+    {
+        foreach ($results as $result) {
+            if (isset($result['result'])) {
                 return $result['result'];
             }
         }
@@ -106,6 +143,34 @@ class Wiz
         $message->params = new \stdClass();
 
         return $this->send_udp($message, $ip);
+    }
+
+    /**
+     * Model config: cctRange, hardware revision, etc.
+     *
+     * Returns raw decoded response; cctRange shape (2-element vs 4-element)
+     * is preserved — the caller decides which indices to read.
+     */
+    public function get_model_config($ip): array
+    {
+        $message = new \stdClass();
+        $message->method = 'getModelConfig';
+        $message->params = new \stdClass();
+
+        return $this->send_udp($message, $ip);
+    }
+
+    /**
+     * Check whether a model_config payload carries a usable cctRange.
+     */
+    private function hasUsableCctRange(array $modelConfig): bool
+    {
+        $cctRange = $modelConfig['cctRange'] ?? null;
+        if (!is_array($cctRange)) {
+            return false;
+        }
+        $len = count($cctRange);
+        return $len === 2 || $len === 4;
     }
 
     public function get_system_config($ip): array

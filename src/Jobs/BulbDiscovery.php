@@ -14,6 +14,7 @@ use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\BulbLastSeen;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use ClarionApp\WizlightBackend\Validation\IpValidator;
+use ClarionApp\WizlightBackend\Capability\CapabilityClassifier;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -59,6 +60,24 @@ class BulbDiscovery implements ShouldQueue
             $existing = Bulb::where('mac', $bulb['mac'])->first();
             $pilotState = $bulb['pilot_state'] ?? [];
             $sysConfig = $bulb['system_config'] ?? [];
+            $modelConfig = $bulb['model_config'] ?? [];
+            $userConfig = $bulb['user_config'] ?? [];
+
+            // Derive warmth range: model_config.cctRange > user_config.extRange > [null, null].
+            [$warmthMin, $warmthMax] = $this->extractWarmthRange($modelConfig, $userConfig);
+
+            // Classify capability from moduleName + warmth range.
+            $classifier = new CapabilityClassifier();
+            $capabilityClass = $classifier->classify(
+                $sysConfig['moduleName'] ?? null,
+                $warmthMin,
+                $warmthMax
+            );
+
+            // Derived capability columns.
+            $firmwareVersion = $sysConfig['fwVersion'] ?? '';
+            $wizRoomId = $sysConfig['roomId'] ?? null;
+            $wizGroupId = $sysConfig['groupId'] ?? null;
 
             if ($existing) {
                 // FR-009, first-discovery-wins: a node may claim a device only
@@ -86,6 +105,16 @@ class BulbDiscovery implements ShouldQueue
                 if (!empty($sysConfig) && isset($sysConfig['moduleName'])) {
                     $reported['model'] = $sysConfig['moduleName'];
                 }
+
+                // Capability columns — always compared and written if different.
+                $reported += [
+                    'firmware_version' => $firmwareVersion,
+                    'capability_class' => $capabilityClass,
+                    'warmth_min_kelvin' => $warmthMin,
+                    'warmth_max_kelvin' => $warmthMax,
+                    'wiz_room_id' => $wizRoomId,
+                    'wiz_group_id' => $wizGroupId,
+                ];
 
                 // Compare loosely and assign only what actually differs. Writing
                 // the whole set unconditionally makes an unchanged bulb dirty
@@ -136,6 +165,12 @@ class BulbDiscovery implements ShouldQueue
                 $b->blue = $pilotState['b'] ?? 0;
                 $b->signal = $pilotState['rssi'] ?? 0;
                 $b->model = $sysConfig['moduleName'] ?? null;
+                $b->firmware_version = $firmwareVersion;
+                $b->capability_class = $capabilityClass;
+                $b->warmth_min_kelvin = $warmthMin;
+                $b->warmth_max_kelvin = $warmthMax;
+                $b->wiz_room_id = $wizRoomId;
+                $b->wiz_group_id = $wizGroupId;
                 $b->save();
             }
 
@@ -194,5 +229,39 @@ class BulbDiscovery implements ShouldQueue
         $heartbeatMinutes = (int) config('wizlight.ownership.heartbeat_minutes', 60);
 
         return $bulb->local_node_seen_at->lessThanOrEqualTo(now()->subMinutes($heartbeatMinutes));
+    }
+
+    /**
+     * Extract warmth [min, max] from model_config.cctRange or user_config.extRange.
+     *
+     * Priority: model_config.cctRange (4-element: indices 1,2; 2-element: indices 0,1)
+     *          > user_config.extRange (2-element: indices 0,1)
+     *          > [null, null].
+     *
+     * @return array{0: int|null, 1: int|null}
+     */
+    private function extractWarmthRange(array $modelConfig, array $userConfig): array
+    {
+        // Try model_config.cctRange first.
+        $cctRange = $modelConfig['cctRange'] ?? null;
+        if (is_array($cctRange)) {
+            $len = count($cctRange);
+            if ($len === 4) {
+                // 4-element: indices 1, 2 are enforced min/max.
+                return [(int) ($cctRange[1] ?? null), (int) ($cctRange[2] ?? null)];
+            }
+            if ($len === 2) {
+                // 2-element: direct min/max.
+                return [(int) $cctRange[0], (int) $cctRange[1]];
+            }
+        }
+
+        // Fallback: user_config.extRange.
+        $extRange = $userConfig['extRange'] ?? null;
+        if (is_array($extRange) && count($extRange) === 2) {
+            return [(int) $extRange[0], (int) $extRange[1]];
+        }
+
+        return [null, null];
     }
 }
