@@ -483,6 +483,11 @@ class BulbControllerTest extends TestCase
         } catch (\Illuminate\Validation\ValidationException $e) {
             $errors = $e->errors();
             $this->assertArrayHasKey('active_mode', $errors, 'Should have errors.active_mode on ambiguous request');
+            $this->assertSame(
+                'Request changes both colour and warmth; send active_mode to say which applies',
+                $errors['active_mode'][0],
+                'Message should name both conflicting groups (contracts/mode-and-scene-api.md)'
+            );
             throw $e;
         }
     }

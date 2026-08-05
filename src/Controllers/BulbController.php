@@ -77,12 +77,12 @@ class BulbController extends Controller
                 if ($inferred !== null) {
                     $validated['active_mode'] = $inferred;
                 }
-            } catch (AmbiguousModeException) {
+            } catch (AmbiguousModeException $e) {
+                // The exception already names the conflicting groups
+                // (contracts/mode-and-scene-api.md's exact wording) — use it
+                // rather than a generic message.
                 throw ValidationException::withMessages([
-                    'active_mode' => [
-                        'Ambiguous mode — multiple mode-owned field groups changed. ' .
-                        'Provide an explicit active_mode to disambiguate.',
-                    ],
+                    'active_mode' => [$e->getMessage()],
                 ]);
             }
         }
