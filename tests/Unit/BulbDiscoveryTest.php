@@ -826,4 +826,227 @@ class BulbDiscoveryTest extends TestCase
         $this->assertNull($bulb->wiz_room_id);
         $this->assertNull($bulb->wiz_group_id);
     }
+
+    /** @test */
+    public function rediscovery_updates_firmware_version_when_it_changes()
+    {
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now(),
+            'mac' => 'AA:BB:CC:DD:EE:10',
+            'ip' => '192.168.1.200',
+            'name' => 'Stored Dim Bulb',
+            'state' => true,
+            'dimming' => 45,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -70,
+            'model' => 'ESP06_SHDW1_31',
+            'firmware_version' => '1.0',
+            'capability_class' => 'dim_only',
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+            'wiz_room_id' => 2,
+            'wiz_group_id' => 0,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:10',
+                'ip' => '192.168.1.200',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:10', 'state' => true, 'dimming' => 45, 'rssi' => -70], 'from' => '192.168.1.200'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:10', 'moduleName' => 'ESP06_SHDW1_31', 'fwVersion' => '1.1', 'homeId' => 111, 'roomId' => 2, 'groupId' => 0], 'from' => '192.168.1.200'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:10')->first();
+        $this->assertEquals('1.1', $bulb->firmware_version, 'Firmware bump reported by re-discovery is stored');
+        $this->assertEquals('dim_only', $bulb->capability_class, 'Unrelated capability class is left alone');
+        $this->assertNull($bulb->warmth_min_kelvin);
+        $this->assertNull($bulb->warmth_max_kelvin);
+        $this->assertEquals(2, $bulb->wiz_room_id);
+        $this->assertEquals(0, $bulb->wiz_group_id);
+    }
+
+    /** @test */
+    public function rediscovery_upgrades_capability_class_and_warmth_range_when_a_range_appears()
+    {
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now(),
+            'mac' => 'AA:BB:CC:DD:EE:11',
+            'ip' => '192.168.1.201',
+            'name' => 'Stored Unknown Bulb',
+            'state' => false,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -80,
+            'model' => 'ESP99_XYZ1_01',
+            'firmware_version' => '0.9.9',
+            'capability_class' => 'dim_only',
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+            'wiz_room_id' => 3,
+            'wiz_group_id' => 1,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:11',
+                'ip' => '192.168.1.201',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:11', 'state' => false, 'dimming' => 100, 'rssi' => -80], 'from' => '192.168.1.201'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:11', 'moduleName' => 'ESP99_XYZ1_01', 'fwVersion' => '1.0.0', 'homeId' => 111, 'roomId' => 3, 'groupId' => 1], 'from' => '192.168.1.201'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [
+                    ['result' => ['extRange' => [2700, 5000]]],
+                ],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:11')->first();
+        $this->assertEquals('tunable_white', $bulb->capability_class, 'A newly-reported range upgrades the stored class');
+        $this->assertEquals(2700, $bulb->warmth_min_kelvin);
+        $this->assertEquals(5000, $bulb->warmth_max_kelvin);
+        $this->assertEquals('1.0.0', $bulb->firmware_version);
+    }
+
+    /** @test */
+    public function rediscovery_updates_wiz_room_and_group_id_when_reassigned()
+    {
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now(),
+            'mac' => 'AA:BB:CC:DD:EE:12',
+            'ip' => '192.168.1.202',
+            'name' => 'Stored Colour Bulb',
+            'state' => true,
+            'dimming' => 80,
+            'red' => 255,
+            'green' => 120,
+            'blue' => 0,
+            'signal' => -55,
+            'model' => 'ESP01_SHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 1,
+            'wiz_group_id' => 2,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:12',
+                'ip' => '192.168.1.202',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:12', 'state' => true, 'dimming' => 80, 'r' => 255, 'g' => 120, 'b' => 0, 'rssi' => -55], 'from' => '192.168.1.202'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:12', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 5, 'groupId' => 9], 'from' => '192.168.1.202'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:12')->first();
+        $this->assertEquals(5, $bulb->wiz_room_id, 'Manufacturer room reassignment is picked up on re-discovery');
+        $this->assertEquals(9, $bulb->wiz_group_id, 'Manufacturer group reassignment is picked up on re-discovery');
+        $this->assertEquals('full_colour', $bulb->capability_class, 'Unrelated capability class is left alone');
+        $this->assertEquals(2200, $bulb->warmth_min_kelvin);
+        $this->assertEquals(6500, $bulb->warmth_max_kelvin);
+    }
+
+    /** @test */
+    public function rediscovery_of_a_fully_probed_unchanged_bulb_writes_nothing()
+    {
+        // Distinguishes the capability columns' diff-then-write path from the
+        // create path: every capability field is already populated exactly as
+        // a full-colour re-discovery would derive it, so a matching cycle must
+        // cost zero writes just as it already does for state/dimming/model.
+        $bulb = Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now()->subMinutes(5),
+            'mac' => 'AA:BB:CC:DD:EE:13',
+            'ip' => '192.168.1.203',
+            'name' => 'Stable Colour Bulb',
+            'state' => true,
+            'dimming' => 80,
+            'red' => 255,
+            'green' => 120,
+            'blue' => 0,
+            'signal' => -55,
+            'model' => 'ESP01_SHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 1,
+            'wiz_group_id' => 2,
+        ]);
+        $originalUpdatedAt = $bulb->fresh()->updated_at;
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:13',
+                'ip' => '192.168.1.203',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:13', 'state' => true, 'dimming' => 80, 'r' => 255, 'g' => 120, 'b' => 0, 'rssi' => -55], 'from' => '192.168.1.203'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:13', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.203'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        sleep(1);
+        (new BulbDiscovery())->handle();
+
+        $this->assertEquals(
+            $originalUpdatedAt,
+            Bulb::where('mac', 'AA:BB:CC:DD:EE:13')->first()->updated_at,
+            'A fully-probed bulb with matching capability data must cost zero additional writes'
+        );
+    }
 }
