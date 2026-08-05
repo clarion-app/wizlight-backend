@@ -867,4 +867,156 @@ class DeviceCapabilityValidatorTest extends TestCase
         $speedSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_speed');
         $this->assertCount(0, $speedSkips);
     }
+
+    // ------------------------------------------------------------------
+    // US4: white_warm / white_cool rejected when capability_class !== full_colour
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us4_white_warm_rejected_on_tunable_white_validate()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['white_warm' => 128]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('white_warm', $errors);
+            // Error message should name the field and the device class.
+            $this->assertStringContainsString('white_warm', $errors['white_warm'][0]);
+            $this->assertStringContainsString('tunable_white', $errors['white_warm'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function us4_white_cool_rejected_on_dim_only_validate()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['white_cool' => 200]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('white_cool', $errors);
+            $this->assertStringContainsString('white_cool', $errors['white_cool'][0]);
+            $this->assertStringContainsString('dim_only', $errors['white_cool'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function us4_white_warm_accepted_on_full_colour_validate()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, [
+                'white_warm' => 200,
+                'white_cool' => 40,
+            ]);
+            $this->assertTrue(true, 'white_warm and white_cool must be accepted on a full_colour device.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: white_warm / white_cool filtered for non-full_colour bulbs
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us4_filterForRoom_records_skip_for_white_warm_on_tunable_white()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-tw-white-channel-skip',
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+
+        $validated = [
+            'active_mode' => 'white_channels',
+            'white_warm' => 128,
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        // white_warm should be dropped from applicable values.
+        $this->assertArrayNotHasKey('white_warm', $applicable);
+        // And recorded as a skip.
+        $warmSkips = array_values(array_filter($skips, fn ($s) => $s['field'] === 'white_warm'));
+        $this->assertCount(1, $warmSkips);
+        $this->assertSame('bulb-tw-white-channel-skip', $warmSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function us4_filterForRoom_records_skip_for_white_cool_on_dim_only()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-dim-white-cool-skip',
+            'capability_class' => CapabilityClass::DIM_ONLY,
+        ]);
+
+        $validated = [
+            'white_cool' => 200,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayNotHasKey('white_cool', $applicable);
+        $coolSkips = array_values(array_filter($skips, fn ($s) => $s['field'] === 'white_cool'));
+        $this->assertCount(1, $coolSkips);
+        $this->assertSame('bulb-dim-white-cool-skip', $coolSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function us4_filterForRoom_passes_white_channels_on_full_colour()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-fc-white-channel-pass',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+
+        $validated = [
+            'active_mode' => 'white_channels',
+            'white_warm' => 200,
+            'white_cool' => 40,
+            'dimming' => 80,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayHasKey('white_warm', $applicable);
+        $this->assertSame(200, $applicable['white_warm']);
+        $this->assertArrayHasKey('white_cool', $applicable);
+        $this->assertSame(40, $applicable['white_cool']);
+        $warmSkips = array_filter($skips, fn ($s) => $s['field'] === 'white_warm');
+        $coolSkips = array_filter($skips, fn ($s) => $s['field'] === 'white_cool');
+        $this->assertCount(0, $warmSkips);
+        $this->assertCount(0, $coolSkips);
+    }
 }

@@ -698,4 +698,75 @@ class BulbControllerTest extends TestCase
             throw $e;
         }
     }
+
+    // ------------------------------------------------------------------
+    // US4: white_warm / white_cool controller tests
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_white_warm_on_tunable_white_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'tunable_white',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.20',
+            'active_mode' => 'warmth',
+            'temperature' => 3000,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'white_channels',
+            'white_warm' => 128,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('white_warm', $errors);
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_accepts_white_channels_on_full_colour_bulb_and_dispatches_c_w()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.30',
+            'active_mode' => 'rgb',
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'white_channels',
+            'white_warm' => 200,
+            'white_cool' => 40,
+        ]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        // Command should be dispatched with 'w' (white_warm) and 'c' (white_cool) parameters.
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) use ($bulb) {
+            $this->assertSame($bulb->ip, $job->ip);
+            $params = (array) $job->command->params;
+            $this->assertArrayHasKey('w', $params);
+            $this->assertSame(200, $params['w']);
+            $this->assertArrayHasKey('c', $params);
+            $this->assertSame(40, $params['c']);
+            return true;
+        });
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
 }

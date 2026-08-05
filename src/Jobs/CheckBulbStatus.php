@@ -110,6 +110,11 @@ class CheckBulbStatus implements ShouldQueue
             $reported['blue'] = $payload['b'] ?? null;
         }
 
+        // White channels: read back w (warm) and c (cool), never defaulted
+        // to zero — retention rule, same as r/g/b above.
+        $reported['white_warm'] = $payload['w'] ?? null;
+        $reported['white_cool'] = $payload['c'] ?? null;
+
         $changed = false;
         foreach ($reported as $column => $value) {
             if ($value === null) {

@@ -222,6 +222,27 @@ class DeviceCapabilityValidator
             }
         }
 
+        // --- White channels (US4, T067) ---
+        // Only full_colour devices support direct white channel control.
+        if ($cc !== CapabilityClass::FULL_COLOUR) {
+            if (isset($validated['white_warm'])) {
+                $errors['white_warm'] = [
+                    sprintf(
+                        'white_warm not supported by %s device',
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            }
+            if (isset($validated['white_cool'])) {
+                $errors['white_cool'] = [
+                    sprintf(
+                        'white_cool not supported by %s device',
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            }
+        }
+
         if (!empty($errors)) {
             self::throwValidationException($errors);
         }
@@ -467,6 +488,38 @@ class DeviceCapabilityValidator
                 } else {
                     $applicable['scene_speed'] = $validated['scene_speed'];
                 }
+            }
+        }
+
+        // White channels: capability-gated (US4, T067)
+        // Only full_colour devices accept white_warm / white_cool.
+        if (array_key_exists('white_warm', $validated)) {
+            if ($cc === CapabilityClass::FULL_COLOUR) {
+                $applicable['white_warm'] = $validated['white_warm'];
+            } else {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'white_warm',
+                    'reason' => sprintf(
+                        'White warm channel not supported by %s device',
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            }
+        }
+
+        if (array_key_exists('white_cool', $validated)) {
+            if ($cc === CapabilityClass::FULL_COLOUR) {
+                $applicable['white_cool'] = $validated['white_cool'];
+            } else {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'white_cool',
+                    'reason' => sprintf(
+                        'White cool channel not supported by %s device',
+                        $cc ?: 'unprobed'
+                    ),
+                ];
             }
         }
 

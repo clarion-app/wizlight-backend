@@ -8,6 +8,8 @@ use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
 use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
+use ClarionApp\WizlightBackend\Capability\CapabilityClass;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 
@@ -949,5 +951,80 @@ class WizlightServiceTest extends TestCase
         $this->assertCount(1, $skips);
         $this->assertEquals('bulb-tw-scene-room', $skips[0]['bulb_id']);
         $this->assertEquals('scene_id', $skips[0]['field']);
+    }
+
+    // ------------------------------------------------------------------
+    // US4: white_channels command shape and retention of superseded values
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us4_build_command_white_channels_emits_c_w_omits_rgb_temp_scene()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 80;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = ActiveMode::WHITE_CHANNELS;
+        $bulb->white_warm = 200;
+        $bulb->white_cool = 40;
+
+        $command = $service->buildCommand($bulb);
+
+        // white_channels mode emits 'c' (white_warm) and 'w' (white_cool).
+        $this->assertTrue(property_exists($command->params, 'w'));
+        $this->assertSame(200, $command->params->w);
+        $this->assertTrue(property_exists($command->params, 'c'));
+        $this->assertSame(40, $command->params->c);
+        // Must NOT emit colour fields, temperature, or sceneId.
+        $this->assertFalse(property_exists($command->params, 'r'));
+        $this->assertFalse(property_exists($command->params, 'g'));
+        $this->assertFalse(property_exists($command->params, 'b'));
+        $this->assertFalse(property_exists($command->params, 'temp'));
+        $this->assertFalse(property_exists($command->params, 'sceneId'));
+    }
+
+    /** @test */
+    public function us4_update_bulb_state_switching_to_white_channels_retains_colour_and_warmth()
+    {
+        // Bulb mock with existing colour and warmth values.
+        $bulb = $this->makeBulbMock([
+            'id' => 'bulb-retain-white-channels',
+            'mac' => 'AA:BB:CC:DD:EE:FF',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'red' => 255,
+            'green' => 128,
+            'blue' => 64,
+            'temperature' => 3000,
+            'active_mode' => ActiveMode::RGB,
+            'white_warm' => null,
+            'white_cool' => null,
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+        ]);
+
+        $service = new WizlightService();
+        $service->updateBulbState($bulb, [
+            'active_mode' => ActiveMode::WHITE_CHANNELS,
+            'white_warm' => 200,
+            'white_cool' => 40,
+            'dimming' => 80,
+        ]);
+
+        // Switching to white_channels mode should update white_warm, white_cool, active_mode.
+        $this->assertSame(ActiveMode::WHITE_CHANNELS, $bulb->getAttribute('active_mode'));
+        $this->assertSame(200, $bulb->getAttribute('white_warm'));
+        $this->assertSame(40, $bulb->getAttribute('white_cool'));
+        // Previous colour and warmth values should be retained (not cleared).
+        $this->assertSame(255, $bulb->getAttribute('red'));
+        $this->assertSame(128, $bulb->getAttribute('green'));
+        $this->assertSame(64, $bulb->getAttribute('blue'));
+        $this->assertSame(3000, $bulb->getAttribute('temperature'));
     }
 }
