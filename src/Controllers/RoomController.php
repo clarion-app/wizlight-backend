@@ -3,6 +3,7 @@
 namespace ClarionApp\WizlightBackend\Controllers;
 
 use ClarionApp\WizlightBackend\Models\Room;
+use ClarionApp\WizlightBackend\Scenes\SceneCatalogue;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
 use ClarionApp\WizlightBackend\Services\WizlightService;
@@ -62,6 +63,9 @@ class RoomController extends Controller
             'temperature' => 'nullable|integer|min:0|max:6500',
             'dimming' => 'nullable|integer|min:0|max:100',
             'name' => 'nullable|string',
+            'active_mode' => 'nullable|string|in:rgb,warmth,white_channels,scene',
+            'scene_id' => 'nullable|integer',
+            'scene_speed' => 'nullable|integer|min:' . SceneCatalogue::SPEED_MIN . '|max:' . SceneCatalogue::SPEED_MAX,
         ]);
 
         $room = Room::with('bulbs')->find($id);

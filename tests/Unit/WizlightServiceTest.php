@@ -853,4 +853,101 @@ class WizlightServiceTest extends TestCase
         $this->assertEquals(100, $result->scene_speed);
         $this->assertEquals(11, $result->scene_id);
     }
+
+    // ------------------------------------------------------------------
+    // Phase 6 (US3): Room scene fan-out with mixed-capability members
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function updateRoomState_scene_fan_out_skips_member_lacking_scene_support()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        // Full-colour bulb — Ocean (scene 1) is supported.
+        $fcBulb = $this->makeBulbMock([
+            'state' => true,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 80,
+            'temperature' => 2700,
+            'id' => 'bulb-fc-scene-room',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.40',
+            'capability_class' => 'full_colour',
+            'scene_id' => null,
+            'scene_speed' => null,
+            'active_mode' => 'rgb',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $fcBulb->expects($this->once())->method('save');
+
+        // Tunable-white bulb — Ocean (scene 1) is NOT supported.
+        // Its active_mode is already 'scene' so the active_mode field won't
+        // trigger a change (value matches stored). Only scene_id is in the
+        // request beyond active_mode, and it will be filtered out by
+        // filterForRoom().  The bulb should therefore receive no save, no
+        // dispatch, no event — "left entirely alone" per the contract.
+        $twBulb = $this->makeBulbMock([
+            'state' => true,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 60,
+            'temperature' => 3500,
+            'id' => 'bulb-tw-scene-room',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.41',
+            'capability_class' => 'tunable_white',
+            'scene_id' => null,
+            'scene_speed' => null,
+            'active_mode' => 'scene',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        // Because active_mode == 'scene' (same as request) and scene_id is
+        // filtered, only always-pass fields remain (none changing) — bulb
+        // should be left entirely alone.
+        $twBulb->expects($this->never())->method('save');
+
+        $room = $this->makeRoomMock(
+            [
+                'state' => false,
+                'red' => 255,
+                'green' => 0,
+                'blue' => 0,
+                'dimming' => 50,
+                'temperature' => 2700,
+                'active_mode' => null,
+                'scene_id' => null,
+            ],
+            collect([$fcBulb, $twBulb])
+        );
+        $room->expects($this->once())->method('save');
+
+        $result = $service->updateRoomState($room, [
+            'active_mode' => 'scene',
+            'scene_id' => 1, // Ocean — full_colour only
+        ]);
+
+        // Room aggregate should have scene saved regardless of member support.
+        $roomResult = is_array($result) ? $result['room'] : $result;
+        $this->assertEquals('scene', $roomResult->active_mode);
+        $this->assertEquals(1, $roomResult->scene_id);
+
+        // The full-colour bulb should have scene_id applied.
+        $this->assertEquals(1, $fcBulb->scene_id);
+
+        // The tunable-white bulb should NOT have scene_id written to it.
+        $this->assertNull($twBulb->scene_id, 'Tunable-white bulb should not have scene_id set');
+
+        // capability_skips should record the tunable-white bulb's skip.
+        $skips = $result['capability_skips'];
+        $this->assertCount(1, $skips);
+        $this->assertEquals('bulb-tw-scene-room', $skips[0]['bulb_id']);
+        $this->assertEquals('scene_id', $skips[0]['field']);
+    }
 }

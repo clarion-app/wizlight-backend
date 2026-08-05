@@ -221,4 +221,135 @@ class RoomControllerTest extends TestCase
 
         $this->assertEquals(404, $response->status());
     }
+
+    // ------------------------------------------------------------------
+    // Phase 6 (US3): Room scene with mixed-capability members
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_room_scene_supported_by_only_some_members_returns_skips()
+    {
+        $room = $this->createRoom([
+            'name' => 'Mixed Room',
+            'state' => false,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 50,
+            'temperature' => 2700,
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        // Three full_colour bulbs — Ocean (scene 1) is supported.
+        $fc1 = $this->createBulb([
+            'mac' => 'aa:bb:cc:dd:ee:10',
+            'ip' => '192.168.1.10',
+            'name' => 'FC Bulb 1',
+            'state' => false,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 2700,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+            'capability_class' => 'full_colour',
+        ]);
+        $fc2 = $this->createBulb([
+            'mac' => 'aa:bb:cc:dd:ee:11',
+            'ip' => '192.168.1.11',
+            'name' => 'FC Bulb 2',
+            'state' => false,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 2700,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+            'capability_class' => 'full_colour',
+        ]);
+        $fc3 = $this->createBulb([
+            'mac' => 'aa:bb:cc:dd:ee:12',
+            'ip' => '192.168.1.12',
+            'name' => 'FC Bulb 3',
+            'state' => false,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 2700,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+            'capability_class' => 'full_colour',
+        ]);
+
+        // Two tunable_white bulbs — Ocean (scene 1) is NOT supported.
+        $tw1 = $this->createBulb([
+            'mac' => 'aa:bb:cc:dd:ee:20',
+            'ip' => '192.168.1.20',
+            'name' => 'TW Bulb 1',
+            'state' => false,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 3000,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+            'capability_class' => 'tunable_white',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $tw2 = $this->createBulb([
+            'mac' => 'aa:bb:cc:dd:ee:21',
+            'ip' => '192.168.1.21',
+            'name' => 'TW Bulb 2',
+            'state' => false,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'dimming' => 75,
+            'temperature' => 3000,
+            'local_node_id' => 'other-node',
+            'room_id' => (string) $room->id,
+            'capability_class' => 'tunable_white',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'scene',
+            'scene_id' => 1, // Ocean — full_colour only
+        ]);
+
+        $result = $controller->update($request, (string) $room->id);
+
+        // Response should be 200 (room-level scene is never rejected).
+        $this->assertEquals('scene', $result->active_mode);
+        $this->assertEquals(1, $result->scene_id);
+
+        // capability_skips should name each unsupported member with field: 'scene_id'.
+        $skips = $result->getAttribute('capability_skips');
+        $this->assertIsArray($skips);
+        $this->assertCount(2, $skips);
+
+        // Both tunable_white bulbs should be in the skips.
+        $skipBulbIds = array_column($skips, 'bulb_id');
+        $this->assertContains((string) $tw1->id, $skipBulbIds);
+        $this->assertContains((string) $tw2->id, $skipBulbIds);
+
+        // Each skip should have field == 'scene_id'.
+        foreach ($skips as $skip) {
+            $this->assertEquals('scene_id', $skip['field']);
+            $this->assertStringContainsString('Ocean', $skip['reason']);
+        }
+
+        // The room's own active_mode/scene_id are saved regardless of member support.
+        $room->refresh();
+        $this->assertEquals('scene', $room->active_mode);
+        $this->assertEquals(1, $room->scene_id);
+    }
 }
