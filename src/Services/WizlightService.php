@@ -2,7 +2,6 @@
 
 namespace ClarionApp\WizlightBackend\Services;
 
-use ClarionApp\WizlightBackend\Capability\CapabilityClassifier;
 use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
 use ClarionApp\WizlightBackend\Mode\ActiveMode;
 use ClarionApp\WizlightBackend\Models\Bulb;
@@ -365,8 +364,16 @@ class WizlightService
                 break;
         }
 
-        // Dual-head ratio (always emitted when dual_head && head_ratio set)
-        $isDualHead = CapabilityClassifier::detectDualHead($bulb->model ?? null);
+        // Dual-head ratio. Orthogonal to the mode above: it rides along with
+        // whichever mode's own parameters the command carries.
+        //
+        // Gated on the *stored* capability fact, never re-derived from the
+        // module name here — the derivation belongs to discovery, and running
+        // it on the command path would mean a corrected flag never took effect
+        // until the device was re-probed. NULL ("never probed") reads as
+        // single-head, the same conservative fallback a NULL capability class
+        // gets.
+        $isDualHead = ($bulb->dual_head ?? null) === true;
         if ($isDualHead && isset($bulb->head_ratio) && $bulb->head_ratio !== null) {
             $command->params->ratio = (int) $bulb->head_ratio;
         }

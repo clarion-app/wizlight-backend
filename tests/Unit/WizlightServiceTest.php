@@ -666,6 +666,9 @@ class WizlightServiceTest extends TestCase
         $bulb->scene_speed = null;
         $bulb->active_mode = 'rgb';
         $bulb->model = 'ESP01_DHRGB_03';
+        // The stored capability fact is what the builder reads; the module name
+        // is only how discovery derived it.
+        $bulb->dual_head = true;
         $bulb->head_ratio = 50;
 
         $command = $service->buildCommand($bulb);
@@ -1026,5 +1029,114 @@ class WizlightServiceTest extends TestCase
         $this->assertSame(128, $bulb->getAttribute('green'));
         $this->assertSame(64, $bulb->getAttribute('blue'));
         $this->assertSame(3000, $bulb->getAttribute('temperature'));
+    }
+
+    // ------------------------------------------------------------------
+    // US5: head balance rides on every command, orthogonal to the mode
+    // ------------------------------------------------------------------
+
+    /**
+     * A dual-head bulb carrying a stored balance, with the mode's own fields
+     * populated. `model` is deliberately absent: dual-head is a stored
+     * capability fact derived once at discovery, and the command path must read
+     * it rather than re-derive it from the module name.
+     */
+    private function dualHeadBulbInMode(string $mode): \stdClass
+    {
+        $bulb = new \stdClass();
+        $bulb->state = true;
+        $bulb->dimming = 80;
+        $bulb->red = 255;
+        $bulb->green = 128;
+        $bulb->blue = 0;
+        $bulb->temperature = 3000;
+        $bulb->white_warm = 200;
+        $bulb->white_cool = 40;
+        $bulb->scene_id = 1;
+        $bulb->scene_speed = 140;
+        $bulb->active_mode = $mode;
+        $bulb->dual_head = true;
+        $bulb->head_ratio = 75;
+
+        return $bulb;
+    }
+
+    /** @test */
+    public function us5_ratio_present_in_scene_mode_on_a_dual_head_bulb()
+    {
+        $command = (new WizlightService())->buildCommand($this->dualHeadBulbInMode(ActiveMode::SCENE));
+
+        $this->assertObjectHasProperty('ratio', $command->params, 'Scene mode must still carry the head balance');
+        $this->assertSame(75, $command->params->ratio);
+        $this->assertObjectHasProperty('sceneId', $command->params, 'The mode still owns its own parameters');
+    }
+
+    /** @test */
+    public function us5_ratio_present_in_rgb_mode_on_a_dual_head_bulb()
+    {
+        $command = (new WizlightService())->buildCommand($this->dualHeadBulbInMode(ActiveMode::RGB));
+
+        $this->assertObjectHasProperty('ratio', $command->params, 'RGB mode must still carry the head balance');
+        $this->assertSame(75, $command->params->ratio);
+        $this->assertObjectHasProperty('r', $command->params);
+    }
+
+    /** @test */
+    public function us5_ratio_present_in_warmth_mode_on_a_dual_head_bulb()
+    {
+        $command = (new WizlightService())->buildCommand($this->dualHeadBulbInMode(ActiveMode::WARMTH));
+
+        $this->assertObjectHasProperty('ratio', $command->params, 'Warmth mode must still carry the head balance');
+        $this->assertSame(75, $command->params->ratio);
+        $this->assertObjectHasProperty('temp', $command->params);
+    }
+
+    /** @test */
+    public function us5_ratio_present_in_white_channels_mode_on_a_dual_head_bulb()
+    {
+        $command = (new WizlightService())->buildCommand($this->dualHeadBulbInMode(ActiveMode::WHITE_CHANNELS));
+
+        $this->assertObjectHasProperty('ratio', $command->params, 'White-channel mode must still carry the head balance');
+        $this->assertSame(75, $command->params->ratio);
+        $this->assertObjectHasProperty('c', $command->params);
+        $this->assertObjectHasProperty('w', $command->params);
+    }
+
+    /** @test */
+    public function us5_ratio_absent_when_the_stored_dual_head_fact_is_false()
+    {
+        // The module name says DH, the stored capability fact says otherwise.
+        // The stored fact governs — capability is never re-derived on the
+        // command path, so a corrected flag takes effect without a re-probe.
+        $bulb = $this->dualHeadBulbInMode(ActiveMode::RGB);
+        $bulb->model = 'ESP01_DHRGB_03';
+        $bulb->dual_head = false;
+
+        $command = (new WizlightService())->buildCommand($bulb);
+
+        $this->assertObjectNotHasProperty('ratio', $command->params, 'A single-head device takes no ratio');
+    }
+
+    /** @test */
+    public function us5_ratio_absent_when_dual_head_was_never_probed()
+    {
+        $bulb = $this->dualHeadBulbInMode(ActiveMode::RGB);
+        $bulb->model = 'ESP01_DHRGB_03';
+        $bulb->dual_head = null;
+
+        $command = (new WizlightService())->buildCommand($bulb);
+
+        $this->assertObjectNotHasProperty('ratio', $command->params, 'An unprobed device reads as single-head');
+    }
+
+    /** @test */
+    public function us5_ratio_absent_on_a_dual_head_bulb_with_no_stored_balance()
+    {
+        $bulb = $this->dualHeadBulbInMode(ActiveMode::RGB);
+        $bulb->head_ratio = null;
+
+        $command = (new WizlightService())->buildCommand($bulb);
+
+        $this->assertObjectNotHasProperty('ratio', $command->params, 'No stored balance, nothing to send');
     }
 }

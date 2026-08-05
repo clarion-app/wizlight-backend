@@ -75,6 +75,15 @@ class BulbDiscovery implements ShouldQueue
                 $warmthMax
             );
 
+            // Dual-head is derived from the same module name, on the same
+            // closed allowlist, but independently of the capability class — a
+            // dual-head fixture may be of any class. Only derivable when the
+            // device actually reported a module name; without one the stored
+            // value is left alone rather than being reset to false.
+            $dualHead = isset($sysConfig['moduleName'])
+                ? CapabilityClassifier::detectDualHead($sysConfig['moduleName'])
+                : null;
+
             // Derived capability columns.
             $firmwareVersion = $sysConfig['fwVersion'] ?? '';
             $wizRoomId = $sysConfig['roomId'] ?? null;
@@ -157,6 +166,18 @@ class BulbDiscovery implements ShouldQueue
                     }
                 }
 
+                // Dual-head folds into the same diff-then-write, but compared
+                // strictly: a stored NULL ("never probed") is not the same
+                // fact as a probed false, and loose comparison would treat
+                // them as equal and leave the column unprobed forever.
+                if ($dualHead !== null) {
+                    $stored = $existing->dual_head;
+                    if ($stored === null || (bool) $stored !== $dualHead) {
+                        $existing->dual_head = $dualHead;
+                        $changed = true;
+                    }
+                }
+
                 // Write scene_id when it differs — scene changes are always
                 // meaningful (user switched to a scene).
                 $sceneIdChanged = false;
@@ -212,6 +233,7 @@ class BulbDiscovery implements ShouldQueue
                 $b->warmth_max_kelvin = $warmthMax;
                 $b->wiz_room_id = $wizRoomId;
                 $b->wiz_group_id = $wizGroupId;
+                $b->dual_head = $dualHead;
 
                 // T024: scene_id and active_mode from pilot_state
                 if (isset($pilotState['sceneId'])) {

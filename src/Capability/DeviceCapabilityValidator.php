@@ -243,6 +243,18 @@ class DeviceCapabilityValidator
             }
         }
 
+        // --- Head balance (US5) ---
+        // Gated on the stored dual_head fact alone, not on capability class:
+        // a dual-head fixture may be of any class. NULL means "never probed"
+        // and reads as single-head — the conservative fallback.
+        if (array_key_exists('head_ratio', $validated) && $validated['head_ratio'] !== null) {
+            if ($bulb->getAttribute('dual_head') !== true) {
+                $errors['head_ratio'] = [
+                    'Head balance not supported by this single-head fixture',
+                ];
+            }
+        }
+
         if (!empty($errors)) {
             self::throwValidationException($errors);
         }
@@ -519,6 +531,19 @@ class DeviceCapabilityValidator
                         'White cool channel not supported by %s device',
                         $cc ?: 'unprobed'
                     ),
+                ];
+            }
+        }
+
+        // Head balance: gated on the stored dual_head fact (US5).
+        if (array_key_exists('head_ratio', $validated)) {
+            if ($bulb->getAttribute('dual_head') === true) {
+                $applicable['head_ratio'] = $validated['head_ratio'];
+            } else {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'head_ratio',
+                    'reason' => 'Head balance not supported by this single-head fixture',
                 ];
             }
         }

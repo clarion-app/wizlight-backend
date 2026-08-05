@@ -115,6 +115,11 @@ class CheckBulbStatus implements ShouldQueue
         $reported['white_warm'] = $payload['w'] ?? null;
         $reported['white_cool'] = $payload['c'] ?? null;
 
+        // Head balance on a dual-head fixture — same retention rule: a device
+        // that does not report a ratio leaves the stored balance alone rather
+        // than having it zeroed.
+        $reported['head_ratio'] = $payload['ratio'] ?? null;
+
         $changed = false;
         foreach ($reported as $column => $value) {
             if ($value === null) {

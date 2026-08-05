@@ -1016,6 +1016,9 @@ class BulbDiscoveryTest extends TestCase
             'warmth_max_kelvin' => 6500,
             'wiz_room_id' => 1,
             'wiz_group_id' => 2,
+            // "Fully probed" includes the dual-head fact: a NULL here means
+            // never probed, and the next cycle would legitimately fill it in.
+            'dual_head' => false,
         ]);
         $originalUpdatedAt = $bulb->fresh()->updated_at;
 
@@ -1164,6 +1167,9 @@ class BulbDiscoveryTest extends TestCase
             'wiz_group_id' => 2,
             'scene_id' => 5,
             'active_mode' => 'scene',
+            // Probed single-head: a NULL would legitimately be filled in on
+            // the next cycle and cost the write this test forbids.
+            'dual_head' => false,
         ]);
         $originalUpdatedAt = $bulb->fresh()->updated_at;
 
@@ -1195,6 +1201,208 @@ class BulbDiscoveryTest extends TestCase
             $originalUpdatedAt,
             Bulb::where('mac', 'AA:BB:CC:DD:EE:22')->first()->updated_at,
             'Bulb with matching scene_id and active_mode should cost zero writes'
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // US5: dual_head derived at discovery from the module name
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us5_discovery_derives_dual_head_true_from_dh_module_name()
+    {
+        // Dual-head fixture. The `DH` substring is the closed-allowlist marker;
+        // `RGB` still governs the capability class, so the two derivations are
+        // independent and must both land on the row.
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:30',
+                'ip' => '192.168.1.220',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:30', 'state' => true, 'dimming' => 100, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -52], 'from' => '192.168.1.220'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:30', 'moduleName' => 'ESP01_DHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 12345, 'roomId' => 67, 'groupId' => 8], 'from' => '192.168.1.220'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:30')->first();
+        $this->assertNotNull($bulb);
+        $this->assertTrue($bulb->dual_head, 'A DH module name must derive dual_head = true');
+        $this->assertEquals('full_colour', $bulb->capability_class, 'The RGB substring still governs the capability class');
+        $this->assertEquals('ESP01_DHRGB_03', $bulb->model);
+    }
+
+    /** @test */
+    public function us5_discovery_derives_dual_head_false_from_single_head_module_names()
+    {
+        // Neither SHRGB nor SHTW1 carries the marker. Both are probed devices,
+        // so both must store a definite false rather than "not yet probed".
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:31',
+                'ip' => '192.168.1.221',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:31', 'state' => true, 'dimming' => 80, 'r' => 255, 'g' => 120, 'b' => 0, 'rssi' => -55], 'from' => '192.168.1.221'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:31', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.221'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+            [
+                'mac' => 'AA:BB:CC:DD:EE:32',
+                'ip' => '192.168.1.222',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:32', 'state' => true, 'dimming' => 60, 'temp' => 3000, 'rssi' => -62], 'from' => '192.168.1.222'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:32', 'moduleName' => 'ESP03_SHTW1_01ABI', 'fwVersion' => '1.22.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 3], 'from' => '192.168.1.222'],
+                ],
+                'model_config_response' => [],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $rgb = Bulb::where('mac', 'AA:BB:CC:DD:EE:31')->first();
+        $this->assertNotNull($rgb);
+        $this->assertSame(false, $rgb->dual_head, 'SHRGB carries no dual-head marker');
+
+        $tw = Bulb::where('mac', 'AA:BB:CC:DD:EE:32')->first();
+        $this->assertNotNull($tw);
+        $this->assertSame(false, $tw->dual_head, 'SHTW1 carries no dual-head marker');
+    }
+
+    /** @test */
+    public function us5_rediscovery_corrects_a_stale_dual_head_flag()
+    {
+        // dual_head is a derived capability fact like capability_class: a row
+        // whose stored value disagrees with what the device reports is corrected
+        // on the next cycle, through the same diff-then-write.
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now(),
+            'mac' => 'AA:BB:CC:DD:EE:33',
+            'ip' => '192.168.1.223',
+            'name' => 'Stale Flag Fixture',
+            'state' => true,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -52,
+            'model' => 'ESP01_DHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 67,
+            'wiz_group_id' => 8,
+            'dual_head' => false,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:33',
+                'ip' => '192.168.1.223',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:33', 'state' => true, 'dimming' => 100, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -52], 'from' => '192.168.1.223'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:33', 'moduleName' => 'ESP01_DHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 12345, 'roomId' => 67, 'groupId' => 8], 'from' => '192.168.1.223'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:33')->first();
+        $this->assertTrue($bulb->dual_head, 'A stale dual_head must be corrected on re-discovery');
+    }
+
+    /** @test */
+    public function us5_rediscovery_of_an_unchanged_dual_head_bulb_writes_nothing()
+    {
+        // dual_head folds into the existing diff-then-write rather than being
+        // stamped unconditionally: a device whose every derived fact already
+        // matches must still cost zero writes, and every write here replicates.
+        $bulb = Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now()->subMinutes(5),
+            'mac' => 'AA:BB:CC:DD:EE:34',
+            'ip' => '192.168.1.224',
+            'name' => 'Stable Dual Head Fixture',
+            'state' => true,
+            'dimming' => 100,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -52,
+            'model' => 'ESP01_DHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 67,
+            'wiz_group_id' => 8,
+            'dual_head' => true,
+        ]);
+        $originalUpdatedAt = $bulb->fresh()->updated_at;
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:34',
+                'ip' => '192.168.1.224',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:34', 'state' => true, 'dimming' => 100, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -52], 'from' => '192.168.1.224'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:34', 'moduleName' => 'ESP01_DHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 12345, 'roomId' => 67, 'groupId' => 8], 'from' => '192.168.1.224'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        sleep(1);
+        (new BulbDiscovery())->handle();
+
+        $reloaded = Bulb::where('mac', 'AA:BB:CC:DD:EE:34')->first();
+        $this->assertTrue($reloaded->dual_head, 'The flag survives the cycle');
+        $this->assertEquals(
+            $originalUpdatedAt,
+            $reloaded->updated_at,
+            'An unchanged dual-head bulb must cost zero writes'
         );
     }
 }

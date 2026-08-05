@@ -769,4 +769,157 @@ class BulbControllerTest extends TestCase
         });
         Event::assertDispatched(BulbStatusEvent::class);
     }
+
+    // ------------------------------------------------------------------
+    // US5: head_ratio controller tests
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_head_ratio_on_single_head_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.40',
+            'mac' => 'aa:bb:cc:dd:ee:40',
+            'active_mode' => 'rgb',
+            'dual_head' => false,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'head_ratio' => 75,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->assertArrayHasKey('head_ratio', $e->errors());
+            $this->assertNull($bulb->fresh()->head_ratio, 'Nothing is saved on rejection');
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_rejects_head_ratio_when_dual_head_never_probed()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.41',
+            'mac' => 'aa:bb:cc:dd:ee:41',
+            'active_mode' => 'rgb',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', ['head_ratio' => 75]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $this->assertArrayHasKey('head_ratio', $e->errors());
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_accepts_head_ratio_on_dual_head_bulb_and_dispatches_ratio()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.42',
+            'mac' => 'aa:bb:cc:dd:ee:42',
+            'active_mode' => 'rgb',
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'dual_head' => true,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', ['head_ratio' => 75]);
+
+        $controller->update($request, (string) $bulb->id);
+
+        $this->assertSame(75, $bulb->fresh()->head_ratio);
+        $this->assertSame('rgb', $bulb->fresh()->active_mode, 'Head balance never changes the active mode');
+
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) {
+            $params = (array) $job->command->params;
+            $this->assertArrayHasKey('ratio', $params);
+            $this->assertSame(75, $params['ratio']);
+            return true;
+        });
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_dispatches_ratio_whatever_mode_the_dual_head_bulb_is_in()
+    {
+        // Orthogonality: the balance rides along with whichever mode's own
+        // parameters the command carries, and never displaces them.
+        $modes = [
+            'scene' => ['scene_id' => 1, 'own_param' => 'sceneId'],
+            'rgb' => ['red' => 255, 'green' => 0, 'blue' => 0, 'own_param' => 'r'],
+            'warmth' => ['temperature' => 3000, 'own_param' => 'temp'],
+            'white_channels' => ['white_warm' => 200, 'white_cool' => 40, 'own_param' => 'c'],
+        ];
+
+        // Every fixture is created before the first makeController() call:
+        // Event::fake() suppresses model events too, and the bulb's id is
+        // assigned by a `creating` hook, so a bulb created after the fake
+        // would be saved with a null primary key.
+        $index = 0;
+        $cases = [];
+        foreach ($modes as $mode => $fixture) {
+            $ownParam = $fixture['own_param'];
+            unset($fixture['own_param']);
+
+            $index++;
+            $cases[] = [
+                'mode' => $mode,
+                'own_param' => $ownParam,
+                'bulb' => $this->createBulb(array_merge([
+                    'capability_class' => 'full_colour',
+                    'local_node_id' => 'test-node-id',
+                    'ip' => '192.168.1.5' . $index,
+                    'mac' => 'aa:bb:cc:dd:ee:5' . $index,
+                    'active_mode' => $mode,
+                    'dual_head' => true,
+                    'head_ratio' => 10,
+                ], $fixture)),
+            ];
+        }
+
+        foreach ($cases as $case) {
+            $mode = $case['mode'];
+            $ownParam = $case['own_param'];
+
+            // A fresh fake per case, so each assertion sees only its own
+            // dispatch rather than every earlier mode's as well.
+            $controller = $this->makeController();
+
+            $request = Request::create('/', 'PUT', ['head_ratio' => 75]);
+            $controller->update($request, (string) $case['bulb']->id);
+
+            Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) use ($ownParam, $mode) {
+                $params = (array) $job->command->params;
+                $this->assertArrayHasKey('ratio', $params, "ratio missing in {$mode} mode");
+                $this->assertSame(75, $params['ratio']);
+                $this->assertArrayHasKey($ownParam, $params, "{$mode} mode lost its own parameters");
+                return true;
+            });
+        }
+    }
 }

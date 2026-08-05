@@ -1019,4 +1019,189 @@ class DeviceCapabilityValidatorTest extends TestCase
         $this->assertCount(0, $warmSkips);
         $this->assertCount(0, $coolSkips);
     }
+
+    // ------------------------------------------------------------------
+    // US5: head_ratio rejected when dual_head !== true
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us5_head_ratio_rejected_on_single_head_device_validate()
+    {
+        // A probed single-head device. Capability class is irrelevant here —
+        // head balance is gated on the dual_head fact alone.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => false,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['head_ratio' => 75]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('head_ratio', $errors);
+            $this->assertStringContainsString('head', strtolower($errors['head_ratio'][0]));
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function us5_head_ratio_rejected_when_dual_head_never_probed_validate()
+    {
+        // NULL reads as false — the conservative fallback, exactly as a NULL
+        // capability_class reads as dim_only.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, ['head_ratio' => 75]);
+        } catch (ValidationException $e) {
+            $this->assertArrayHasKey('head_ratio', $e->errors());
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function us5_head_ratio_rejected_on_dim_only_single_head_device_validate()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::DIM_ONLY,
+            'dual_head' => false,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['head_ratio' => 0]);
+    }
+
+    /** @test */
+    public function us5_head_ratio_accepted_on_dual_head_device_validate()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => true,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['head_ratio' => 75]);
+            $this->assertTrue(true, 'head_ratio must be accepted on a dual-head device.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    /** @test */
+    public function us5_head_ratio_accepted_alongside_every_mode_on_a_dual_head_device()
+    {
+        // Orthogonality: head balance is not one of the mode-owned field groups,
+        // so it must never be rejected on account of the mode it accompanies.
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => true,
+            'scene_id' => 1,
+        ]);
+
+        $payloads = [
+            'scene' => ['active_mode' => 'scene', 'scene_id' => 1, 'head_ratio' => 75],
+            'rgb' => ['active_mode' => 'rgb', 'red' => 255, 'green' => 0, 'blue' => 0, 'head_ratio' => 75],
+            'warmth' => ['active_mode' => 'warmth', 'temperature' => 3000, 'head_ratio' => 75],
+            'white_channels' => ['active_mode' => 'white_channels', 'white_warm' => 200, 'white_cool' => 40, 'head_ratio' => 75],
+        ];
+
+        foreach ($payloads as $mode => $payload) {
+            try {
+                $validator->validate($bulb, $payload);
+                $this->assertTrue(true, "head_ratio must be accepted in {$mode} mode.");
+            } catch (ValidationException $e) {
+                $this->fail("Unexpected ValidationException in {$mode} mode: ".$e->getMessage());
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: head_ratio dropped for single-head members
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function us5_filterForRoom_records_skip_for_head_ratio_on_single_head_bulb()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-single-head-ratio-skip',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => false,
+        ]);
+
+        $validated = [
+            'state' => true,
+            'head_ratio' => 75,
+            'dimming' => 80,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayNotHasKey('head_ratio', $applicable);
+        $this->assertArrayHasKey('dimming', $applicable, 'The rest of the payload still applies');
+        $ratioSkips = array_values(array_filter($skips, fn ($s) => $s['field'] === 'head_ratio'));
+        $this->assertCount(1, $ratioSkips);
+        $this->assertSame('bulb-single-head-ratio-skip', $ratioSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function us5_filterForRoom_records_skip_for_head_ratio_when_dual_head_never_probed()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-unprobed-head-ratio-skip',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => null,
+        ]);
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, ['head_ratio' => 25], $skips);
+
+        $this->assertArrayNotHasKey('head_ratio', $applicable);
+        $ratioSkips = array_values(array_filter($skips, fn ($s) => $s['field'] === 'head_ratio'));
+        $this->assertCount(1, $ratioSkips);
+        $this->assertSame('bulb-unprobed-head-ratio-skip', $ratioSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function us5_filterForRoom_passes_head_ratio_on_dual_head_bulb()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-dual-head-ratio-pass',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'dual_head' => true,
+        ]);
+
+        $validated = [
+            'head_ratio' => 75,
+            'dimming' => 80,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayHasKey('head_ratio', $applicable);
+        $this->assertSame(75, $applicable['head_ratio']);
+        $ratioSkips = array_filter($skips, fn ($s) => $s['field'] === 'head_ratio');
+        $this->assertCount(0, $ratioSkips);
+    }
 }
