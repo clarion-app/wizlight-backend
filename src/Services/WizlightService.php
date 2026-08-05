@@ -64,13 +64,41 @@ class WizlightService
         $bulb->save();
 
         if (config('clarion.node_id') == $bulb->local_node_id) {
-            $command = $this->buildCommand($bulb);
-            SendBulbCommand::dispatch($bulb->ip, $command, (string) $bulb->id);
+            $this->sendCommandNow($bulb);
         }
 
         event(new BulbStatusEvent($bulb));
 
         return $bulb;
+    }
+
+    /**
+     * Contact the device in the request rather than through the queue.
+     *
+     * The command is a fire-and-forget UDP datagram — nothing is read back —
+     * so the send itself costs microseconds. Deferring it bought nothing and
+     * cost a great deal: every command landed on the same queue as the
+     * periodic discovery run and the per-light status sweep, and a single
+     * worker serves them strictly in order, so a button press waited behind
+     * up to a full sweep before it reached the light.
+     *
+     * Ordering (the per-bulb lock) and the per-device pace still apply, since
+     * both live in the job's handle(). A send that throws still broadcasts the
+     * failure event the queued path raised through failed().
+     */
+    private function sendCommandNow(Bulb $bulb): void
+    {
+        $job = new SendBulbCommand(
+            $bulb->ip,
+            $this->buildCommand($bulb),
+            (string) $bulb->id
+        );
+
+        try {
+            dispatch_sync($job);
+        } catch (\Throwable $e) {
+            $job->failed($e);
+        }
     }
 
     /**
@@ -178,8 +206,7 @@ class WizlightService
                 $bulbUpdate = true;
 
                 if (config('clarion.node_id') == $bulb->local_node_id) {
-                    $command = $this->buildCommand($bulb);
-                    SendBulbCommand::dispatch($bulb->ip, $command, (string) $bulb->id);
+                    $this->sendCommandNow($bulb);
                 }
 
                 event(new BulbStatusEvent($bulb));

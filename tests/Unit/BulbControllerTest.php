@@ -86,7 +86,7 @@ class BulbControllerTest extends TestCase
         $result = $controller->update($request, (string) $bulb->id);
 
         $this->assertTrue($result->state);
-        Bus::assertDispatched(SendBulbCommand::class);
+        Bus::assertDispatchedSync(SendBulbCommand::class);
         Event::assertDispatched(BulbStatusEvent::class);
     }
 
@@ -107,7 +107,7 @@ class BulbControllerTest extends TestCase
 
         $controller->update($request, (string) $bulb->id);
 
-        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) use ($bulb) {
             return $job->bulbId === (string) $bulb->id && $job->ip === '192.168.1.10';
         });
     }
@@ -128,7 +128,7 @@ class BulbControllerTest extends TestCase
 
         $controller->update($request, (string) $bulb->id);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
@@ -166,7 +166,7 @@ class BulbControllerTest extends TestCase
 
         $controller->update($request, (string) $bulb->id);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
@@ -400,7 +400,7 @@ class BulbControllerTest extends TestCase
         } catch (\Illuminate\Validation\ValidationException $e) {
             // Because the request is rejected at the validation layer,
             // no command should be dispatched and no event should fire.
-            Bus::assertNotDispatched(SendBulbCommand::class);
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
             Event::assertNotDispatched(BulbStatusEvent::class);
             throw $e;
         }
@@ -425,7 +425,7 @@ class BulbControllerTest extends TestCase
         $result = $controller->update($request, (string) $bulb->id);
 
         $this->assertEquals(0, $result->dimming);
-        Bus::assertDispatched(SendBulbCommand::class);
+        Bus::assertDispatchedSync(SendBulbCommand::class);
         Event::assertDispatched(BulbStatusEvent::class);
     }
 
@@ -447,6 +447,6 @@ class BulbControllerTest extends TestCase
         $result = $controller->update($request, (string) $bulb->id);
 
         $this->assertEquals(50, $result->dimming);
-        Bus::assertDispatched(SendBulbCommand::class);
+        Bus::assertDispatchedSync(SendBulbCommand::class);
     }
 }

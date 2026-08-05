@@ -153,7 +153,7 @@ class WizlightServiceTest extends TestCase
 
         $service->updateBulbState($bulb, ['state' => true]);
 
-        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) use ($bulb) {
             return $job->ip === '192.168.1.10' && $job->bulbId === 'bulb-uuid-dispatch';
         });
     }
@@ -172,7 +172,7 @@ class WizlightServiceTest extends TestCase
 
         $service->updateBulbState($bulb, ['state' => true]);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
@@ -189,7 +189,7 @@ class WizlightServiceTest extends TestCase
 
         $result = $service->updateBulbState($bulb, ['state' => false]);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
@@ -249,7 +249,7 @@ class WizlightServiceTest extends TestCase
 
         $service->updateRoomState($room, ['state' => true]);
 
-        Bus::assertDispatched(SendBulbCommand::class, function ($job) {
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) {
             return $job->bulbId === 'bulb-room-local';
         });
     }
@@ -272,7 +272,7 @@ class WizlightServiceTest extends TestCase
 
         $service->updateRoomState($room, ['state' => true]);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
@@ -475,7 +475,7 @@ class WizlightServiceTest extends TestCase
         ]);
 
         // No command dispatched for the skipped bulb.
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
         Event::assertNotDispatched(BulbStatusEvent::class);
     }
 

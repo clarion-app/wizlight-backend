@@ -8,21 +8,25 @@ use ClarionApp\WizlightBackend\Controllers\RoomController;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
-use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
 use ClarionApp\WizlightBackend\Transport\UdpTransport;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Event;
 
 /**
- * T012b — the negative half of the dispatch assertion (FR-001/FR-002).
+ * The request thread may write to the wire, but must never read from it.
  *
- * "SendBulbCommand was dispatched" does not catch an inline send that happens
- * *as well*, which is exactly the shape D1 had. So a transport that fails the
- * test the moment it is touched is bound into the container, and a bulb update
- * and a room update are driven through their controllers.
+ * Sending a setPilot is a fire-and-forget datagram costing microseconds, so it
+ * happens inline — deferring it only put every command behind the periodic
+ * discovery and status sweeps on a shared queue. What must never happen on the
+ * request thread is a *read*: receive() waits for a reply, and a light that is
+ * unplugged never sends one, which is the case that made light control feel
+ * slow in the first place.
+ *
+ * So a transport that records every touch is bound into the container, and a
+ * bulb update and a room update are driven through their controllers: sends are
+ * expected, a receive is a failure.
  */
-class NoSocketDuringHttpWriteTest extends TestCase
+class NoBlockingReadDuringHttpWriteTest extends TestCase
 {
     protected function getPackageProviders($app)
     {
@@ -41,6 +45,13 @@ class NoSocketDuringHttpWriteTest extends TestCase
         ]);
         $app['config']->set('clarion.node_id', 'test-node-id');
         $app['config']->set('eloquent-multichain-bridge.disabled', true);
+
+        // A discarding queue, deliberately. Under the default `sync` driver a
+        // queued dispatch runs inline anyway, so these tests could not tell
+        // "sent during the request" from "handed to a worker" — the very
+        // distinction they exist to pin down. With `null`, anything merely
+        // enqueued is thrown away and the send assertions below go red.
+        $app['config']->set('queue.default', 'null');
     }
 
     protected function defineDatabaseMigrations()
@@ -48,9 +59,9 @@ class NoSocketDuringHttpWriteTest extends TestCase
         $this->loadMigrationsFrom(__DIR__ . '/../../src/Migrations');
     }
 
-    private function forbidSockets(): object
+    private function recordingTransport(): object
     {
-        $forbidden = new class implements UdpTransport {
+        $recorder = new class implements UdpTransport {
             public array $touches = [];
 
             public function send(mixed $message, array $targets): void
@@ -70,9 +81,9 @@ class NoSocketDuringHttpWriteTest extends TestCase
             }
         };
 
-        $this->app->instance(UdpTransport::class, $forbidden);
+        $this->app->instance(UdpTransport::class, $recorder);
 
-        return $forbidden;
+        return $recorder;
     }
 
     private function makeBulb(array $attrs = []): Bulb
@@ -93,25 +104,24 @@ class NoSocketDuringHttpWriteTest extends TestCase
     }
 
     /** @test */
-    public function updating_a_bulb_performs_no_socket_work()
+    public function updating_a_bulb_sends_without_reading()
     {
-        $forbidden = $this->forbidSockets();
+        $recorder = $this->recordingTransport();
         $bulb = $this->makeBulb();
 
-        Bus::fake();
         Event::fake();
 
         $controller = new BulbController(new WizlightService());
         $controller->update(Request::create('/', 'PUT', ['state' => true]), (string) $bulb->id);
 
-        $this->assertSame([], $forbidden->touches, 'An HTTP bulb write must not touch the wire');
-        Bus::assertDispatched(SendBulbCommand::class);
+        $this->assertContains('send', $recorder->touches, 'The command must reach the light in the request');
+        $this->assertNotContains('receive', $recorder->touches, 'An HTTP bulb write must never wait for a reply');
     }
 
     /** @test */
-    public function updating_a_room_performs_no_socket_work_for_any_of_its_bulbs()
+    public function updating_a_room_sends_to_every_bulb_without_reading()
     {
-        $forbidden = $this->forbidSockets();
+        $recorder = $this->recordingTransport();
 
         $room = Room::create([
             'local_node_id' => 'test-node-id',
@@ -132,14 +142,14 @@ class NoSocketDuringHttpWriteTest extends TestCase
             ]);
         }
 
-        Bus::fake();
         Event::fake();
 
         $controller = new RoomController(new WizlightService());
         $controller->update(Request::create('/', 'PUT', ['state' => true]), (string) $room->id);
 
-        $this->assertSame([], $forbidden->touches, 'A room fan-out must not touch the wire on the request thread');
-        Bus::assertDispatched(SendBulbCommand::class, 5);
+        $sends = array_filter($recorder->touches, fn ($touch) => $touch === 'send');
+        $this->assertCount(5, $sends, 'Every member of the room must be commanded in the request');
+        $this->assertNotContains('receive', $recorder->touches, 'A room fan-out must never wait for a reply');
     }
 
     /** @test */
@@ -147,10 +157,9 @@ class NoSocketDuringHttpWriteTest extends TestCase
     {
         // FR-003: the browser can render the new state immediately because the
         // row already holds it, not because the device confirmed anything.
-        $this->forbidSockets();
+        $this->recordingTransport();
         $bulb = $this->makeBulb(['state' => false, 'dimming' => 50]);
 
-        Bus::fake();
         Event::fake();
 
         $controller = new BulbController(new WizlightService());

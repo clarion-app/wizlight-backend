@@ -101,7 +101,7 @@ class RoomControllerTest extends TestCase
         $result = $controller->update($request, (string) $room->id);
 
         $this->assertTrue($result->state);
-        Bus::assertDispatched(SendBulbCommand::class);
+        Bus::assertDispatchedSync(SendBulbCommand::class);
         Event::assertDispatched(BulbStatusEvent::class);
     }
 
@@ -124,7 +124,7 @@ class RoomControllerTest extends TestCase
 
         $controller->update($request, (string) $room->id);
 
-        Bus::assertDispatched(SendBulbCommand::class, function ($job) use ($bulb) {
+        Bus::assertDispatchedSync(SendBulbCommand::class, function ($job) use ($bulb) {
             return $job->bulbId === (string) $bulb->id;
         });
     }
@@ -147,7 +147,7 @@ class RoomControllerTest extends TestCase
 
         $controller->update($request, (string) $room->id);
 
-        Bus::assertNotDispatched(SendBulbCommand::class);
+        Bus::assertNotDispatchedSync(SendBulbCommand::class);
     }
 
     /** @test */
