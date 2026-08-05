@@ -622,4 +622,80 @@ class BulbControllerTest extends TestCase
         });
         Event::assertDispatched(BulbStatusEvent::class);
     }
+
+    // ------------------------------------------------------------------
+    // Phase 5 (US2): scene_speed rejected for static scenes and when no scene is active
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_scene_speed_on_static_scene()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'active_mode' => 'rgb',
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'scene',
+            'scene_id' => 11,
+            'scene_speed' => 150,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_speed', $errors);
+            // Error should mention that the scene is static.
+            $this->assertStringContainsString('static', strtolower($errors['scene_speed'][0]));
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_rejects_scene_speed_when_no_scene_active()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'active_mode' => 'rgb',
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'active_mode' => 'rgb',
+            'red' => 0,
+            'green' => 255,
+            'blue' => 0,
+            'scene_speed' => 150,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_speed', $errors);
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
 }

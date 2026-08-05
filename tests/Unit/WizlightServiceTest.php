@@ -744,4 +744,113 @@ class WizlightServiceTest extends TestCase
 
         $this->assertEquals('warmth', $result->active_mode);
     }
+
+    // ------------------------------------------------------------------
+    // Phase 5 (US2): scene_speed copied onto model and reflected in buildCommand
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function updateBulbState_copies_scene_speed_onto_model_for_animated_scene()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => true,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'active_mode' => 'rgb',
+            'scene_id' => null,
+            'scene_speed' => null,
+        ]);
+        $bulb->expects($this->once())->method('save');
+
+        $result = $service->updateBulbState($bulb, [
+            'active_mode' => 'scene',
+            'scene_id' => 1,
+            'scene_speed' => 150,
+        ]);
+
+        $this->assertEquals(1, $result->scene_id);
+        $this->assertEquals(150, $result->scene_speed);
+        $this->assertEquals('scene', $result->active_mode);
+    }
+
+    /** @test */
+    public function buildCommand_reflects_scene_speed_in_speed_param_for_animated_scene()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 80;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = 1;
+        $bulb->scene_speed = 150;
+        $bulb->active_mode = 'scene';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(1, $command->params->sceneId);
+        $this->assertEquals(150, $command->params->speed);
+        $this->assertEquals(80, $command->params->dimming);
+    }
+
+    /** @test */
+    public function buildCommand_omits_speed_for_static_scene_even_when_scene_speed_stored()
+    {
+        $service = new WizlightService();
+
+        // Warm white (11) is static. Even if scene_speed is stored, speed
+        // should not appear in the command.
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 60;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = 11;
+        $bulb->scene_speed = 150;
+        $bulb->active_mode = 'scene';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(11, $command->params->sceneId);
+        $this->assertObjectNotHasProperty('speed', $command->params, 'Static scene should not include speed even when scene_speed is stored');
+    }
+
+    /** @test */
+    public function updateBulbState_leaves_scene_speed_unchanged_when_scene_is_static()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => true,
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'active_mode' => 'rgb',
+            'scene_id' => 11,
+            'scene_speed' => 100,
+        ]);
+        $bulb->expects($this->once())->method('save');
+
+        // Switching to Warm white (11) — static — should not change scene_speed
+        // even if a new value is sent (the validator should reject it, but here
+        // we test the service layer: scene_speed is copied when present and changed).
+        $result = $service->updateBulbState($bulb, [
+            'active_mode' => 'scene',
+            'scene_id' => 11,
+        ]);
+
+        // scene_speed should remain at 100 (unchanged, because it was not in the request).
+        $this->assertEquals(100, $result->scene_speed);
+        $this->assertEquals(11, $result->scene_id);
+    }
 }

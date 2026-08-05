@@ -683,4 +683,188 @@ class DeviceCapabilityValidatorTest extends TestCase
         $sceneSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_id');
         $this->assertCount(0, $sceneSkips);
     }
+
+    // ------------------------------------------------------------------
+    // US2: scene_speed rejected when effective scene is static or absent
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function scene_speed_rejected_when_request_scene_is_static()
+    {
+        // Warm white (11) is a static scene. Speed should be rejected.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, [
+                'scene_id' => 11,
+                'scene_speed' => 150,
+            ]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_speed', $errors);
+            // Error message should name the scene as not animated.
+            $this->assertStringContainsString('Warm white', $errors['scene_speed'][0]);
+            $this->assertStringContainsString('animated', $errors['scene_speed'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function scene_speed_rejected_when_stored_scene_is_static()
+    {
+        // Bulb has Warm white (11) stored. Request sends scene_speed without
+        // a new scene_id — effective scene is the stored one, which is static.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'scene_id' => 11,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, [
+                'scene_speed' => 150,
+            ]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_speed', $errors);
+            $this->assertStringContainsString('Warm white', $errors['scene_speed'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function scene_speed_rejected_when_no_scene_active()
+    {
+        // Bulb has no stored scene (scene_id is null) and request carries no
+        // scene_id. Speed applies to nothing — should be rejected.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'scene_id' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        try {
+            $validator->validate($bulb, [
+                'scene_speed' => 150,
+            ]);
+        } catch (ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('scene_speed', $errors);
+            // Error should indicate no scene is active.
+            $this->assertStringContainsString('scene', $errors['scene_speed'][0]);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function scene_speed_accepted_when_effective_scene_is_animated()
+    {
+        // Ocean (1) is an animated scene. Speed should be accepted.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, [
+                'scene_id' => 1,
+                'scene_speed' => 150,
+            ]);
+            $this->assertTrue(true, 'scene_speed must be accepted for an animated scene.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: scene_speed filtered for static or absent effective scene
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function filterForRoom_records_skip_for_scene_speed_on_static_scene()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-static-scene-speed',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+
+        $validated = [
+            'scene_id' => 11,
+            'scene_speed' => 150,
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        // scene_speed should be dropped from applicable values.
+        $this->assertArrayNotHasKey('scene_speed', $applicable);
+        // And recorded as a skip.
+        $speedSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_speed');
+        $this->assertCount(1, $speedSkips);
+        $this->assertSame('bulb-static-scene-speed', $speedSkips[0]['bulb_id']);
+        // Skip reason should name the scene as not animated.
+        $this->assertStringContainsString('Warm white', $speedSkips[0]['reason']);
+        $this->assertStringContainsString('animated', $speedSkips[0]['reason']);
+    }
+
+    /** @test */
+    public function filterForRoom_records_skip_for_scene_speed_when_no_scene()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-no-scene-speed',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'scene_id' => null,
+        ]);
+
+        $validated = [
+            'scene_speed' => 150,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayNotHasKey('scene_speed', $applicable);
+        $speedSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_speed');
+        $this->assertCount(1, $speedSkips);
+        $this->assertSame('bulb-no-scene-speed', $speedSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function filterForRoom_passes_scene_speed_on_animated_scene()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-animated-scene-speed',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+        ]);
+
+        $validated = [
+            'scene_id' => 1,
+            'scene_speed' => 140,
+            'dimming' => 80,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayHasKey('scene_speed', $applicable);
+        $this->assertSame(140, $applicable['scene_speed']);
+        $speedSkips = array_filter($skips, fn ($s) => $s['field'] === 'scene_speed');
+        $this->assertCount(0, $speedSkips);
+    }
 }

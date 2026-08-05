@@ -195,6 +195,33 @@ class DeviceCapabilityValidator
             }
         }
 
+        // --- Scene Speed (US2, T050) ---
+        // Reject scene_speed when the effective scene is static or absent.
+        // Effective scene = request's scene_id if present, else bulb's stored scene_id.
+        if (isset($validated['scene_speed'])) {
+            $effectiveSceneId = isset($validated['scene_id'])
+                ? $validated['scene_id']
+                : $bulb->getAttribute('scene_id');
+
+            if ($effectiveSceneId === null) {
+                $errors['scene_speed'] = [
+                    'No scene is active; scene_speed applies only to an animated scene',
+                ];
+            } else {
+                $scene = SceneCatalogue::find($effectiveSceneId);
+                if ($scene === null || !$scene->animated) {
+                    $sceneName = $scene ? $scene->name : "Scene {$effectiveSceneId}";
+                    $errors['scene_speed'] = [
+                        sprintf(
+                            "Scene '%s' (%d) is static (not animated) and takes no speed",
+                            $sceneName,
+                            $effectiveSceneId
+                        ),
+                    ];
+                }
+            }
+        }
+
         if (!empty($errors)) {
             self::throwValidationException($errors);
         }
@@ -408,6 +435,38 @@ class DeviceCapabilityValidator
                 ];
             } else {
                 $applicable['scene_id'] = $validated['scene_id'];
+            }
+        }
+
+        // Scene Speed: capability-gated (US2, T050)
+        // Only pass through when the effective scene is animated.
+        if (array_key_exists('scene_speed', $validated)) {
+            $effectiveSceneId = array_key_exists('scene_id', $validated)
+                ? $validated['scene_id']
+                : $bulb->getAttribute('scene_id');
+
+            if ($effectiveSceneId === null) {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'scene_speed',
+                    'reason' => 'No scene is active; speed applies only to an animated scene',
+                ];
+            } else {
+                $scene = SceneCatalogue::find($effectiveSceneId);
+                if ($scene === null || !$scene->animated) {
+                    $sceneName = $scene ? $scene->name : "Scene {$effectiveSceneId}";
+                    $skips[] = [
+                        'bulb_id' => $bulbId,
+                        'field' => 'scene_speed',
+                        'reason' => sprintf(
+                            "Scene '%s' (%d) is not animated and takes no speed",
+                            $sceneName,
+                            $effectiveSceneId
+                        ),
+                    ];
+                } else {
+                    $applicable['scene_speed'] = $validated['scene_speed'];
+                }
             }
         }
 
