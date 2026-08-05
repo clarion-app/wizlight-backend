@@ -35,4 +35,15 @@ return [
          */
         'min_interval_ms' => (int) env('WIZLIGHT_THROTTLE_MIN_INTERVAL_MS', 200),
     ],
+
+    'capability' => [
+        /*
+         * Fallback minimum brightness percentage for bulbs whose
+         * `min_brightness_pct` column is still NULL (not yet probed).
+         * Most Wiz devices support 1 %, but some older firmware floors
+         * at higher values; discovery will overwrite this with the real
+         * floor once it runs.
+         */
+        'default_min_brightness_pct' => (int) env('WIZLIGHT_CAPABILITY_DEFAULT_MIN_BRIGHTNESS_PCT', 1),
+    ],
 ];

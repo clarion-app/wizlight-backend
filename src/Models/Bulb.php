@@ -18,6 +18,13 @@ class Bulb extends Model
         'ip',
         'name',
         'model',
+        'firmware_version',
+        'capability_class',
+        'warmth_min_kelvin',
+        'warmth_max_kelvin',
+        'min_brightness_pct',
+        'wiz_room_id',
+        'wiz_group_id',
         'group',
         'dimming',
         'state',
@@ -33,6 +40,11 @@ class Bulb extends Model
 
     protected $casts = [
         'local_node_seen_at' => 'datetime',
+        'warmth_min_kelvin' => 'integer',
+        'warmth_max_kelvin' => 'integer',
+        'min_brightness_pct' => 'integer',
+        'wiz_room_id' => 'integer',
+        'wiz_group_id' => 'integer',
     ];
 
     public function last_seen()
