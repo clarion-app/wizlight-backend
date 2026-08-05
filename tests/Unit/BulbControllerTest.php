@@ -449,4 +449,107 @@ class BulbControllerTest extends TestCase
         $this->assertEquals(50, $result->dimming);
         Bus::assertDispatchedSync(SendBulbCommand::class);
     }
+
+    // ------------------------------------------------------------------
+    // Phase 2 (US1): Mode ambiguity detection and explicit active_mode
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_two_mode_owned_field_groups_with_422()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'red' => 100,
+            'green' => 100,
+            'blue' => 100,
+            'temperature' => 2700,
+        ]);
+
+        $controller = $this->makeController();
+
+        // Both RGB and warmth fields changed — ambiguous without active_mode.
+        $request = Request::create('/', 'PUT', [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'temperature' => 4000,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('active_mode', $errors, 'Should have errors.active_mode on ambiguous request');
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_honours_explicit_active_mode()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'red' => 100,
+            'green' => 100,
+            'blue' => 100,
+            'temperature' => 2700,
+            'active_mode' => 'rgb',
+        ]);
+
+        $controller = $this->makeController();
+
+        // Explicit active_mode disambiguates.
+        $request = Request::create('/', 'PUT', [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'temperature' => 4000,
+            'active_mode' => 'rgb',
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
+
+        $this->assertEquals(255, $result->red);
+        $this->assertEquals('rgb', $result->active_mode);
+        Bus::assertDispatchedSync(SendBulbCommand::class);
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_nothing_saved_or_dispatched_on_mode_rejection()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'full_colour',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'red' => 100,
+            'green' => 100,
+            'blue' => 100,
+            'temperature' => 2700,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+            'temperature' => 4000,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // On rejection, nothing should be saved or dispatched.
+            Bus::assertNotDispatchedSync(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
 }

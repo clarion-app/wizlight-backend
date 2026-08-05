@@ -343,13 +343,16 @@ class WizlightServiceTest extends TestCase
 
         $command = $service->buildCommand($bulb);
 
-        $this->assertEquals(0, $command->params->r);
-        $this->assertEquals(0, $command->params->g);
-        $this->assertEquals(0, $command->params->b);
+        // With mode-based approach, zero RGB + non-zero temp resolves to
+        // WARMTH mode, so only temp is emitted (modes are mutually exclusive).
         $this->assertEquals(50, $command->params->dimming);
         $this->assertEquals(4000, $command->params->temp);
         $this->assertIsInt($command->params->temp);
         $this->assertIsInt($command->params->dimming);
+        $this->assertObjectHasProperty('temp', $command->params);
+        $this->assertObjectNotHasProperty('r', $command->params);
+        $this->assertObjectNotHasProperty('g', $command->params);
+        $this->assertObjectNotHasProperty('b', $command->params);
     }
 
     /** @test */
@@ -523,5 +526,222 @@ class WizlightServiceTest extends TestCase
         $this->assertEquals(50, $roomResult->blue);
         $this->assertEquals(4000, $roomResult->temperature);
         $this->assertEquals(75, $roomResult->dimming);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 2 (US1): buildCommand shape per mode, ratio, retention
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function buildCommand_scene_animated_includes_sceneId_and_speed()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 50;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = 1;
+        $bulb->scene_speed = 150;
+        $bulb->active_mode = 'scene';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(1, $command->params->sceneId);
+        $this->assertEquals(150, $command->params->speed);
+        $this->assertEquals(50, $command->params->dimming);
+    }
+
+    /** @test */
+    public function buildCommand_scene_static_includes_sceneId_no_speed()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 50;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = 11;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'scene';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(11, $command->params->sceneId);
+        $this->assertObjectNotHasProperty('speed', $command->params, 'Static scene should not include speed');
+    }
+
+    /** @test */
+    public function buildCommand_rgb_includes_rgb_fields()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 255;
+        $bulb->green = 128;
+        $bulb->blue = 0;
+        $bulb->dimming = 75;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'rgb';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(255, $command->params->r);
+        $this->assertEquals(128, $command->params->g);
+        $this->assertEquals(0, $command->params->b);
+        $this->assertEquals(75, $command->params->dimming);
+    }
+
+    /** @test */
+    public function buildCommand_warmth_includes_temp()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 50;
+        $bulb->temperature = 4000;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'warmth';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(4000, $command->params->temp);
+        $this->assertEquals(50, $command->params->dimming);
+    }
+
+    /** @test */
+    public function buildCommand_white_channels_includes_c_and_w()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 0;
+        $bulb->green = 0;
+        $bulb->blue = 0;
+        $bulb->dimming = 50;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'white_channels';
+        $bulb->white_warm = 200;
+        $bulb->white_cool = 40;
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertEquals(200, $command->params->w);
+        $this->assertEquals(40, $command->params->c);
+        $this->assertEquals(50, $command->params->dimming);
+    }
+
+    /** @test */
+    public function buildCommand_ratio_present_on_dual_head()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 255;
+        $bulb->green = 128;
+        $bulb->blue = 0;
+        $bulb->dimming = 75;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'rgb';
+        $bulb->model = 'ESP01_DHRGB_03';
+        $bulb->head_ratio = 50;
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertObjectHasProperty('ratio', $command->params, 'Dual-head device should include ratio');
+        $this->assertEquals(50, $command->params->ratio);
+    }
+
+    /** @test */
+    public function buildCommand_ratio_absent_on_non_dual_head()
+    {
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 255;
+        $bulb->green = 128;
+        $bulb->blue = 0;
+        $bulb->dimming = 75;
+        $bulb->temperature = 0;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'rgb';
+        $bulb->model = 'ESP01_SHRGB_03';
+
+        $command = $service->buildCommand($bulb);
+
+        $this->assertObjectNotHasProperty('ratio', $command->params, 'Non-dual-head device should not include ratio');
+    }
+
+    /** @test */
+    public function buildCommand_mode_switch_leaves_superseded_columns_unwritten()
+    {
+        // Retention: switching from warmth to rgb should not zero out temperature.
+        // The bulb model carries the old temperature value.
+        $service = new WizlightService();
+
+        $bulb = new \stdClass();
+        $bulb->red = 255;
+        $bulb->green = 128;
+        $bulb->blue = 0;
+        $bulb->dimming = 75;
+        $bulb->temperature = 4000;
+        $bulb->state = true;
+        $bulb->scene_id = null;
+        $bulb->scene_speed = null;
+        $bulb->active_mode = 'rgb';
+        $bulb->model = 'ESP01_SHRGB_03';
+
+        $command = $service->buildCommand($bulb);
+
+        // RGB command should not include temp parameter.
+        $this->assertObjectNotHasProperty('temp', $command->params, 'RGB command should not include temp');
+    }
+
+    /** @test */
+    public function updateBulbState_writes_active_mode_column()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+        $bulb = $this->makeBulbMock([
+            'state' => false,
+            'red' => 255,
+            'green' => 255,
+            'blue' => 255,
+            'active_mode' => 'rgb',
+        ]);
+        $bulb->expects($this->once())->method('save');
+
+        $result = $service->updateBulbState($bulb, [
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'temperature' => 3000,
+            'active_mode' => 'warmth',
+        ]);
+
+        $this->assertEquals('warmth', $result->active_mode);
     }
 }

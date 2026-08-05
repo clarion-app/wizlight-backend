@@ -381,4 +381,128 @@ class DeviceCapabilityValidatorTest extends TestCase
 
         $validator->validate($bulb, ['temperature' => 4000]);
     }
+
+    // ------------------------------------------------------------------
+    // active_mode rule: rgb/white_channels rejected on non-full_colour
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function active_mode_rgb_rejected_on_tunable_white()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'active_mode' => 'rgb',
+        ]);
+    }
+
+    /** @test */
+    public function active_mode_rgb_rejected_on_dim_only()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'active_mode' => 'rgb',
+        ]);
+    }
+
+    /** @test */
+    public function active_mode_white_channels_rejected_on_tunable_white()
+    {
+        // white_channels mode is only valid on dual-head full_colour devices.
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'active_mode' => 'white_channels',
+        ]);
+    }
+
+    /** @test */
+    public function active_mode_warmth_rejected_on_dim_only()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'active_mode' => 'warmth',
+        ]);
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: active_mode field filtered for incompatible bulbs
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function filterForRoom_records_skip_for_active_mode_on_incompatible_bulb()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-tunable-white-active-mode',
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+
+        $validated = [
+            'state' => true,
+            'active_mode' => 'rgb',
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        // active_mode should be dropped from applicable values.
+        $this->assertArrayNotHasKey('active_mode', $applicable);
+        // And recorded as a skip.
+        $activeModeSkips = array_filter($skips, fn ($s) => $s['field'] === 'active_mode');
+        $this->assertCount(1, $activeModeSkips);
+        $this->assertSame('bulb-tunable-white-active-mode', $activeModeSkips[0]['bulb_id']);
+    }
+
+    /** @test */
+    public function filterForRoom_passes_active_mode_on_compatible_bulb()
+    {
+        $validator = $this->makeValidator();
+
+        $bulb = $this->mockBulb([
+            'id' => 'bulb-full-colour-active-mode',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+
+        $validated = [
+            'active_mode' => 'rgb',
+            'dimming' => 75,
+        ];
+
+        $skips = [];
+        $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+        $this->assertArrayHasKey('active_mode', $applicable);
+        $this->assertSame('rgb', $applicable['active_mode']);
+        $activeModeSkips = array_filter($skips, fn ($s) => $s['field'] === 'active_mode');
+        $this->assertCount(0, $activeModeSkips);
+    }
 }

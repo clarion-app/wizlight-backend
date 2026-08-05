@@ -34,6 +34,13 @@ class Bulb extends Model
         'blue',
         'signal',
         'room_id',
+        'active_mode',
+        'scene_id',
+        'scene_speed',
+        'white_warm',
+        'white_cool',
+        'head_ratio',
+        'dual_head',
     ];
 
     protected $table = 'wizlight_bulbs';
@@ -45,6 +52,12 @@ class Bulb extends Model
         'min_brightness_pct' => 'integer',
         'wiz_room_id' => 'integer',
         'wiz_group_id' => 'integer',
+        'scene_id' => 'integer',
+        'scene_speed' => 'integer',
+        'white_warm' => 'integer',
+        'white_cool' => 'integer',
+        'head_ratio' => 'integer',
+        'dual_head' => 'boolean',
     ];
 
     public function last_seen()

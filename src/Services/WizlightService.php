@@ -2,11 +2,14 @@
 
 namespace ClarionApp\WizlightBackend\Services;
 
+use ClarionApp\WizlightBackend\Capability\CapabilityClassifier;
 use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
 use ClarionApp\WizlightBackend\Jobs\SendBulbCommand;
+use ClarionApp\WizlightBackend\Scenes\SceneCatalogue;
 
 class WizlightService
 {
@@ -14,6 +17,62 @@ class WizlightService
     {
         $update = false;
 
+        // --- Mode decision chain (T019) ---
+        // 1. Explicit active_mode from request.
+        // 2. Inferred from field groups in request vs stored.
+        // 3. Stored active_mode (unchanged — no mode change requested).
+        $currentMode = null;
+        if (array_key_exists('active_mode', $validated)) {
+            $currentMode = $validated['active_mode'];
+        } else {
+            try {
+                $inferred = ActiveMode::infer(
+                    $validated,
+                    [
+                        'red' => $bulb->red,
+                        'green' => $bulb->green,
+                        'blue' => $bulb->blue,
+                        'temperature' => $bulb->temperature,
+                        'white_warm' => $bulb->white_warm,
+                        'white_cool' => $bulb->white_cool,
+                        'scene_id' => $bulb->scene_id,
+                    ]
+                );
+                if ($inferred !== null) {
+                    $currentMode = $inferred;
+                }
+            } catch (\RuntimeException) {
+                // AmbiguousModeException — caller (controller) should have
+                // caught it, but if we reach here, fall through to stored mode.
+            }
+        }
+
+        // If neither explicit nor inferred, keep the stored mode.
+        // Do NOT call resolve() here — it would infer a mode from stored
+        // values even when no mode change is requested, causing a spurious
+        // write (e.g., stored null → inferred 'rgb' → save dispatched).
+        if ($currentMode === null) {
+            $currentMode = $bulb->active_mode;
+        }
+
+        // Write active_mode only if it actually changed.
+        if ($bulb->active_mode !== $currentMode) {
+            $bulb->active_mode = $currentMode;
+            $update = true;
+        }
+
+        // --- Scene fields ---
+        if (isset($validated['scene_id']) && $bulb->scene_id != $validated['scene_id']) {
+            $bulb->scene_id = $validated['scene_id'];
+            $update = true;
+        }
+
+        if (isset($validated['scene_speed']) && $bulb->scene_speed != $validated['scene_speed']) {
+            $bulb->scene_speed = $validated['scene_speed'];
+            $update = true;
+        }
+
+        // --- Common fields (unchanged) ---
         if (isset($validated['state'])) {
             $newState = $validated['state'] ? true : false;
             if ($bulb->state != $newState) {
@@ -47,6 +106,24 @@ class WizlightService
             $update = true;
         }
 
+        // --- White channel fields ---
+        if (isset($validated['white_warm']) && $bulb->white_warm != $validated['white_warm']) {
+            $bulb->white_warm = $validated['white_warm'];
+            $update = true;
+        }
+
+        if (isset($validated['white_cool']) && $bulb->white_cool != $validated['white_cool']) {
+            $bulb->white_cool = $validated['white_cool'];
+            $update = true;
+        }
+
+        // --- Head ratio field ---
+        if (isset($validated['head_ratio']) && $bulb->head_ratio != $validated['head_ratio']) {
+            $bulb->head_ratio = $validated['head_ratio'];
+            $update = true;
+        }
+
+        // --- Non-mode fields ---
         if (isset($validated['name']) && $bulb->name != $validated['name']) {
             $bulb->name = $validated['name'];
             $update = true;
@@ -148,6 +225,22 @@ class WizlightService
             $update = true;
         }
 
+        // Scene fields on room aggregate (T020)
+        if (isset($validated['active_mode']) && $room->active_mode != $validated['active_mode']) {
+            $room->active_mode = $validated['active_mode'];
+            $update = true;
+        }
+
+        if (isset($validated['scene_id']) && $room->scene_id != $validated['scene_id']) {
+            $room->scene_id = $validated['scene_id'];
+            $update = true;
+        }
+
+        if (isset($validated['scene_speed']) && $room->scene_speed != $validated['scene_speed']) {
+            $room->scene_speed = $validated['scene_speed'];
+            $update = true;
+        }
+
         if ($update) {
             $room->save();
         }
@@ -201,6 +294,17 @@ class WizlightService
                 $bulbChanged = true;
             }
 
+            // Scene fields per member bulb (T020)
+            if (isset($applicable['scene_id']) && $bulb->scene_id != $applicable['scene_id']) {
+                $bulb->scene_id = $applicable['scene_id'];
+                $bulbChanged = true;
+            }
+
+            if (isset($applicable['scene_speed']) && $bulb->scene_speed != $applicable['scene_speed']) {
+                $bulb->scene_speed = $applicable['scene_speed'];
+                $bulbChanged = true;
+            }
+
             if ($bulbChanged) {
                 $bulb->save();
                 $bulbUpdate = true;
@@ -221,14 +325,50 @@ class WizlightService
         $command = new \stdClass();
         $command->method = 'setPilot';
         $command->params = new \stdClass();
-        $command->params->r = (int) $bulb->red;
-        $command->params->g = (int) $bulb->green;
-        $command->params->b = (int) $bulb->blue;
-        $command->params->dimming = (int) $bulb->dimming;
-        $command->params->state = $bulb->state ? 1 : 0;
+        $command->params->dimming = (int) ($bulb->dimming ?? 100);
+        $command->params->state = (isset($bulb->state) && $bulb->state) ? 1 : 0;
 
-        if ($bulb->red == 0 && $bulb->green == 0 && $bulb->blue == 0 && $bulb->temperature > 0) {
-            $command->params->temp = (int) $bulb->temperature;
+        // Resolve the active mode (T018)
+        $mode = ActiveMode::resolve(
+            $bulb->active_mode ?? null,
+            [
+                'red' => $bulb->red ?? 0,
+                'green' => $bulb->green ?? 0,
+                'blue' => $bulb->blue ?? 0,
+                'temperature' => $bulb->temperature ?? 0,
+            ]
+        );
+
+        // Mode-specific fields
+        switch ($mode) {
+            case ActiveMode::SCENE:
+                $command->params->sceneId = (int) ($bulb->scene_id ?? 0);
+                // Animated scenes include speed; static scenes do not.
+                if (SceneCatalogue::isAnimated((int) ($bulb->scene_id ?? 0))) {
+                    $command->params->speed = (int) ($bulb->scene_speed ?? config('wizlight.scene.default_speed', 100));
+                }
+                break;
+
+            case ActiveMode::RGB:
+                $command->params->r = (int) ($bulb->red ?? 0);
+                $command->params->g = (int) ($bulb->green ?? 0);
+                $command->params->b = (int) ($bulb->blue ?? 0);
+                break;
+
+            case ActiveMode::WARMTH:
+                $command->params->temp = (int) ($bulb->temperature ?? 0);
+                break;
+
+            case ActiveMode::WHITE_CHANNELS:
+                $command->params->w = (int) ($bulb->white_warm ?? 0);
+                $command->params->c = (int) ($bulb->white_cool ?? 0);
+                break;
+        }
+
+        // Dual-head ratio (always emitted when dual_head && head_ratio set)
+        $isDualHead = CapabilityClassifier::detectDualHead($bulb->model ?? null);
+        if ($isDualHead && isset($bulb->head_ratio) && $bulb->head_ratio !== null) {
+            $command->params->ratio = (int) $bulb->head_ratio;
         }
 
         return $command;

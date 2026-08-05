@@ -21,6 +21,14 @@ class Room extends Model
         'green',
         'blue',
         'local_node_id',
+        'active_mode',
+        'scene_id',
+        'scene_speed',
+    ];
+
+    protected $casts = [
+        'scene_id' => 'integer',
+        'scene_speed' => 'integer',
     ];
 
     protected $table = 'wizlight_rooms';

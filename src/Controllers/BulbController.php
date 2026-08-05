@@ -3,9 +3,13 @@
 namespace ClarionApp\WizlightBackend\Controllers;
 
 use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
+use ClarionApp\WizlightBackend\Mode\AmbiguousModeException;
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Scenes\SceneCatalogue;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
+use Illuminate\Validation\ValidationException;
 use ClarionApp\WizlightBackend\Services\WizlightService;
 
 class BulbController extends Controller
@@ -40,14 +44,50 @@ class BulbController extends Controller
             'dimming' => 'nullable|integer|min:0|max:100',
             'name' => 'nullable|string',
             'room_id' => 'nullable|uuid|exists:wizlight_rooms,id',
+            'active_mode' => 'nullable|string|in:rgb,warmth,white_channels,scene',
+            'scene_id' => 'nullable|integer',
+            'scene_speed' => 'nullable|integer|min:' . SceneCatalogue::SPEED_MIN . '|max:' . SceneCatalogue::SPEED_MAX,
+            'white_warm' => 'nullable|integer|min:0|max:255',
+            'white_cool' => 'nullable|integer|min:0|max:255',
+            'head_ratio' => 'nullable|integer|min:0|max:100',
         ]);
 
         $bulb = Bulb::find($id);
-        if(!$bulb) {
+        if (!$bulb) {
             return response()->json(['message' => 'Bulb not found'], 404);
         }
 
-        // Validate against device capability (Phase 4, US2).
+        // Mode decision: if no explicit active_mode, try to infer from field groups.
+        // If ambiguous (two+ mode-owned groups changed), reject with 422.
+        if (!array_key_exists('active_mode', $validated)) {
+            try {
+                $inferred = ActiveMode::infer(
+                    $validated,
+                    [
+                        'red' => $bulb->red,
+                        'green' => $bulb->green,
+                        'blue' => $bulb->blue,
+                        'temperature' => $bulb->temperature,
+                        'white_warm' => $bulb->white_warm,
+                        'white_cool' => $bulb->white_cool,
+                        'scene_id' => $bulb->scene_id,
+                    ]
+                );
+                // If inferred, add it to validated payload.
+                if ($inferred !== null) {
+                    $validated['active_mode'] = $inferred;
+                }
+            } catch (AmbiguousModeException) {
+                throw ValidationException::withMessages([
+                    'active_mode' => [
+                        'Ambiguous mode — multiple mode-owned field groups changed. ' .
+                        'Provide an explicit active_mode to disambiguate.',
+                    ],
+                ]);
+            }
+        }
+
+        // Validate against device capability (Phase 4, US2 + T021).
         (new DeviceCapabilityValidator())->validate($bulb, $validated);
 
         return $this->service->updateBulbState($bulb, $validated);

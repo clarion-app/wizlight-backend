@@ -46,4 +46,12 @@ return [
          */
         'default_min_brightness_pct' => (int) env('WIZLIGHT_CAPABILITY_DEFAULT_MIN_BRIGHTNESS_PCT', 1),
     ],
+
+    'scene' => [
+        /*
+         * Default speed for animated scenes when a bulb's scene_speed
+         * column is NULL. Range: 10–200 (SceneCatalogue::SPEED_MIN/MAX).
+         */
+        'default_speed' => (int) env('WIZLIGHT_SCENE_DEFAULT_SPEED', 100),
+    ],
 ];

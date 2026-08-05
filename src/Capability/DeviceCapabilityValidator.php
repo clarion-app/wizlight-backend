@@ -3,6 +3,8 @@
 namespace ClarionApp\WizlightBackend\Capability;
 
 use ClarionApp\WizlightBackend\Models\Bulb;
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
+use ClarionApp\WizlightBackend\Scenes\SceneCatalogue;
 use Illuminate\Translation\ArrayLoader;
 use Illuminate\Translation\Translator;
 use Illuminate\Validation\ValidationException;
@@ -121,6 +123,50 @@ class DeviceCapabilityValidator
                         $minBrightness
                     ),
                 ];
+            }
+        }
+
+        // --- Active mode (T021) ---
+        // Reject active_mode values incompatible with the device's capability class.
+        if (isset($validated['active_mode'])) {
+            $mode = $validated['active_mode'];
+            $rejected = false;
+            $reason = '';
+
+            switch ($mode) {
+                case ActiveMode::RGB:
+                    if ($cc !== CapabilityClass::FULL_COLOUR) {
+                        $rejected = true;
+                        $reason = sprintf('RGB mode not supported by %s device', $cc ?: 'unprobed');
+                    }
+                    break;
+
+                case ActiveMode::WHITE_CHANNELS:
+                    // White channels require dual-head full_colour devices.
+                    if ($cc !== CapabilityClass::FULL_COLOUR) {
+                        $rejected = true;
+                        $reason = sprintf('White channels mode not supported by %s device', $cc ?: 'unprobed');
+                    }
+                    break;
+
+                case ActiveMode::WARMTH:
+                    if ($cc !== CapabilityClass::TUNABLE_WHITE && $cc !== CapabilityClass::FULL_COLOUR) {
+                        $rejected = true;
+                        $reason = sprintf('Warmth mode not supported by %s device', $cc ?: 'unprobed');
+                    }
+                    break;
+
+                case ActiveMode::SCENE:
+                    $availableScenes = SceneCatalogue::forCapabilityClass($cc);
+                    if (empty($availableScenes)) {
+                        $rejected = true;
+                        $reason = sprintf('Scene mode not supported by %s device', $cc ?: 'unprobed');
+                    }
+                    break;
+            }
+
+            if ($rejected) {
+                $errors['active_mode'] = [$reason];
             }
         }
 
@@ -263,6 +309,53 @@ class DeviceCapabilityValidator
         // Dimming: always passes (dimming === 0 is always valid).
         if (array_key_exists('dimming', $validated)) {
             $applicable['dimming'] = $validated['dimming'];
+        }
+
+        // Active mode: capability-gated (T021)
+        if (array_key_exists('active_mode', $validated)) {
+            $mode = $validated['active_mode'];
+            $compatible = true;
+
+            switch ($mode) {
+                case ActiveMode::RGB:
+                    if ($cc !== CapabilityClass::FULL_COLOUR) {
+                        $compatible = false;
+                    }
+                    break;
+
+                case ActiveMode::WHITE_CHANNELS:
+                    if ($cc !== CapabilityClass::FULL_COLOUR) {
+                        $compatible = false;
+                    }
+                    break;
+
+                case ActiveMode::WARMTH:
+                    if ($cc !== CapabilityClass::TUNABLE_WHITE && $cc !== CapabilityClass::FULL_COLOUR) {
+                        $compatible = false;
+                    }
+                    break;
+
+                case ActiveMode::SCENE:
+                    $availableScenes = SceneCatalogue::forCapabilityClass($cc);
+                    if (empty($availableScenes)) {
+                        $compatible = false;
+                    }
+                    break;
+            }
+
+            if ($compatible) {
+                $applicable['active_mode'] = $validated['active_mode'];
+            } else {
+                $skips[] = [
+                    'bulb_id' => $bulbId,
+                    'field' => 'active_mode',
+                    'reason' => sprintf(
+                        'Active mode %s not supported by %s device',
+                        $mode,
+                        $cc ?: 'unprobed'
+                    ),
+                ];
+            }
         }
 
         return $applicable;

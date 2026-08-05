@@ -1049,4 +1049,152 @@ class BulbDiscoveryTest extends TestCase
             'A fully-probed bulb with matching capability data must cost zero additional writes'
         );
     }
+
+    // ------------------------------------------------------------------
+    // Phase 2 (US1): scene_id and active_mode in discovery
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function discovery_creates_bulb_with_scene_id_and_active_mode_from_pilot_state()
+    {
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:20',
+                'ip' => '192.168.1.210',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:20', 'state' => true, 'dimming' => 70, 'sceneId' => 3, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -48], 'from' => '192.168.1.210'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:20', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.210'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:20')->first();
+        $this->assertNotNull($bulb);
+        $this->assertEquals(3, $bulb->scene_id, 'scene_id should be captured from pilot_state');
+        $this->assertEquals('scene', $bulb->active_mode, 'active_mode should be set to scene');
+    }
+
+    /** @test */
+    public function rediscovery_updates_scene_id_and_active_mode_columns()
+    {
+        Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now(),
+            'mac' => 'AA:BB:CC:DD:EE:21',
+            'ip' => '192.168.1.211',
+            'name' => 'Scene Update Bulb',
+            'state' => true,
+            'dimming' => 60,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -50,
+            'model' => 'ESP01_SHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 1,
+            'wiz_group_id' => 2,
+            'scene_id' => null,
+            'active_mode' => null,
+        ]);
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:21',
+                'ip' => '192.168.1.211',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:21', 'state' => true, 'dimming' => 60, 'sceneId' => 7, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -50], 'from' => '192.168.1.211'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:21', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.211'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        (new BulbDiscovery())->handle();
+
+        $bulb = Bulb::where('mac', 'AA:BB:CC:DD:EE:21')->first();
+        $this->assertEquals(7, $bulb->scene_id, 'scene_id should be updated on re-discovery');
+        $this->assertEquals('scene', $bulb->active_mode, 'active_mode should be updated on re-discovery');
+    }
+
+    /** @test */
+    public function rediscovery_zero_writes_when_scene_and_mode_unchanged()
+    {
+        $bulb = Bulb::create([
+            'local_node_id' => 'test-node-001',
+            'local_node_seen_at' => now()->subMinutes(5),
+            'mac' => 'AA:BB:CC:DD:EE:22',
+            'ip' => '192.168.1.212',
+            'name' => 'Stable Scene Bulb',
+            'state' => true,
+            'dimming' => 80,
+            'red' => 255,
+            'green' => 120,
+            'blue' => 0,
+            'signal' => -55,
+            'model' => 'ESP01_SHRGB_03',
+            'firmware_version' => '1.25.0',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'wiz_room_id' => 1,
+            'wiz_group_id' => 2,
+            'scene_id' => 5,
+            'active_mode' => 'scene',
+        ]);
+        $originalUpdatedAt = $bulb->fresh()->updated_at;
+
+        $bulbData = [
+            [
+                'mac' => 'AA:BB:CC:DD:EE:22',
+                'ip' => '192.168.1.212',
+                'pilot_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:22', 'state' => true, 'dimming' => 80, 'sceneId' => 5, 'r' => 0, 'g' => 0, 'b' => 0, 'rssi' => -55], 'from' => '192.168.1.212'],
+                ],
+                'sysconfig_response' => [
+                    ['result' => ['mac' => 'AA:BB:CC:DD:EE:22', 'moduleName' => 'ESP01_SHRGB_03', 'fwVersion' => '1.25.0', 'homeId' => 111, 'roomId' => 1, 'groupId' => 2], 'from' => '192.168.1.212'],
+                ],
+                'model_config_response' => [
+                    ['result' => ['cctRange' => [2000, 2200, 6500, 6500]]],
+                ],
+                'user_config_response' => [],
+            ],
+        ];
+
+        $responses = $this->buildExtendedDiscoveryResponses($bulbData);
+        $transport = $this->makeMockTransport($responses);
+        app()->instance(UdpTransport::class, $transport);
+
+        sleep(1);
+        (new BulbDiscovery())->handle();
+
+        $this->assertEquals(
+            $originalUpdatedAt,
+            Bulb::where('mac', 'AA:BB:CC:DD:EE:22')->first()->updated_at,
+            'Bulb with matching scene_id and active_mode should cost zero writes'
+        );
+    }
 }

@@ -202,4 +202,134 @@ class CheckBulbStatusTest extends TestCase
         $this->assertEquals(0, $bulb->blue, 'DB blue should be corrected');
         $this->assertEquals(-70, $bulb->signal, 'DB signal should be corrected');
     }
+
+    // ------------------------------------------------------------------
+    // Phase 2 (US1): sceneId payload retention and no-mode-signal case
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function handle_sceneId_payload_leaves_stored_rgb_unchanged()
+    {
+        // When a bulb is playing a scene, the pilot_state carries sceneId > 0
+        // but no r/g/b values (or r/g/b = 0). CheckBulbStatus should NOT zero
+        // out the stored RGB columns — it should leave them as-is.
+        $transport = $this->makeTransport([
+                'result' => [
+                    'mac' => 'AA:BB:CC:DD:EE:10',
+                    'state' => true,
+                    'dimming' => 80,
+                    'sceneId' => 1,
+                    'r' => 0,
+                    'g' => 0,
+                    'b' => 0,
+                    'rssi' => -45,
+                ],
+                'from' => '192.168.1.10',
+            ]);
+
+        $bulb = Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:10',
+            'ip' => '192.168.1.10',
+            'name' => 'Scene Bulb',
+            'state' => true,
+            'dimming' => 80,
+            'red' => 255,
+            'green' => 120,
+            'blue' => 0,
+            'signal' => -55,
+            'scene_id' => 1,
+            'active_mode' => 'scene',
+        ]);
+
+        Event::fake();
+        $job = new CheckBulbStatus((string) $bulb->id, $transport);
+        $job->handle();
+
+        $bulb->refresh();
+        $this->assertEquals(255, $bulb->red, 'Stored red should NOT be zeroed when scene is playing');
+        $this->assertEquals(120, $bulb->green, 'Stored green should NOT be zeroed when scene is playing');
+        $this->assertEquals(0, $bulb->blue, 'Stored blue should NOT be zeroed when scene is playing');
+        $this->assertEquals(1, $bulb->scene_id, 'scene_id should be written');
+        $this->assertEquals('scene', $bulb->active_mode, 'active_mode should be set to scene');
+    }
+
+    /** @test */
+    public function handle_writes_scene_id_and_active_mode_on_scene_payload()
+    {
+        $transport = $this->makeTransport([
+                'result' => [
+                    'mac' => 'AA:BB:CC:DD:EE:11',
+                    'state' => true,
+                    'dimming' => 60,
+                    'sceneId' => 9,
+                    'rssi' => -50,
+                ],
+                'from' => '192.168.1.11',
+            ]);
+
+        $bulb = Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:11',
+            'ip' => '192.168.1.11',
+            'name' => 'Scene Bulb 2',
+            'state' => true,
+            'dimming' => 60,
+            'red' => 0,
+            'green' => 0,
+            'blue' => 0,
+            'signal' => -50,
+            'scene_id' => null,
+            'active_mode' => null,
+        ]);
+
+        Event::fake();
+        $job = new CheckBulbStatus((string) $bulb->id, $transport);
+        $job->handle();
+
+        $bulb->refresh();
+        $this->assertEquals(9, $bulb->scene_id, 'scene_id should be written from payload');
+        $this->assertEquals('scene', $bulb->active_mode, 'active_mode should be set to scene');
+    }
+
+    /** @test */
+    public function handle_payload_with_no_mode_signal_leaves_active_mode_untouched()
+    {
+        // Payload with only state and dimming — no colour, temp, scene, or
+        // white channel signal. active_mode should remain unchanged.
+        $transport = $this->makeTransport([
+                'result' => [
+                    'mac' => 'AA:BB:CC:DD:EE:12',
+                    'state' => true,
+                    'dimming' => 75,
+                    'rssi' => -52,
+                ],
+                'from' => '192.168.1.12',
+            ]);
+
+        $bulb = Bulb::create([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'local_node_id' => (string) \Illuminate\Support\Str::uuid(),
+            'mac' => 'AA:BB:CC:DD:EE:12',
+            'ip' => '192.168.1.12',
+            'name' => 'No Mode Signal Bulb',
+            'state' => true,
+            'dimming' => 50,
+            'red' => 100,
+            'green' => 100,
+            'blue' => 100,
+            'signal' => -52,
+            'scene_id' => null,
+            'active_mode' => 'rgb',
+        ]);
+
+        Event::fake();
+        $job = new CheckBulbStatus((string) $bulb->id, $transport);
+        $job->handle();
+
+        $bulb->refresh();
+        $this->assertEquals('rgb', $bulb->active_mode, 'active_mode should remain unchanged when no mode signal');
+    }
 }

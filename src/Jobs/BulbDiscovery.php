@@ -2,6 +2,7 @@
 
 namespace ClarionApp\WizlightBackend\Jobs;
 
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -91,16 +92,36 @@ class BulbDiscovery implements ShouldQueue
                 }
 
                 $reported = ['ip' => $bulb['ip']];
+                $reportedSceneId = null;
+                $reportedPilotMode = null;
 
                 if (!empty($pilotState)) {
-                    $reported += array_filter([
+                    // When a scene is active, r/g/b in the pilot payload
+                    // represent the scene's current animation frame, not the
+                    // user-set colour. Skip them to avoid zero-writing.
+                    $sceneActive = isset($pilotState['sceneId']) && $pilotState['sceneId'] > 0;
+
+                    $pilotFields = [
                         'state' => isset($pilotState['state']) ? (bool) $pilotState['state'] : null,
                         'dimming' => $pilotState['dimming'] ?? null,
-                        'red' => $pilotState['r'] ?? null,
-                        'green' => $pilotState['g'] ?? null,
-                        'blue' => $pilotState['b'] ?? null,
                         'signal' => $pilotState['rssi'] ?? null,
-                    ], fn ($value) => $value !== null);
+                    ];
+
+                    // Only include r/g/b when NOT in a scene.
+                    if (!$sceneActive) {
+                        $pilotFields['red'] = $pilotState['r'] ?? null;
+                        $pilotFields['green'] = $pilotState['g'] ?? null;
+                        $pilotFields['blue'] = $pilotState['b'] ?? null;
+                    }
+
+                    $reported += array_filter($pilotFields, fn ($value) => $value !== null);
+
+                    // T024: Keep scene_id and active_mode separate from $reported.
+                    // They are "metadata" fields — written only when other fields
+                    // already changed, so a bulb with matching state values costs
+                    // zero writes even if active_mode is null (uninitialized).
+                    $reportedSceneId = isset($pilotState['sceneId']) ? $pilotState['sceneId'] : null;
+                    $reportedPilotMode = ActiveMode::fromPilot($pilotState);
                 }
                 if (!empty($sysConfig) && isset($sysConfig['moduleName'])) {
                     $reported['model'] = $sysConfig['moduleName'];
@@ -132,6 +153,26 @@ class BulbDiscovery implements ShouldQueue
                     }
                     if ($existing->{$column} != $value) {
                         $existing->{$column} = $value;
+                        $changed = true;
+                    }
+                }
+
+                // Write scene_id when it differs — scene changes are always
+                // meaningful (user switched to a scene).
+                $sceneIdChanged = false;
+                if ($reportedSceneId !== null && $existing->scene_id != $reportedSceneId) {
+                    $existing->scene_id = $reportedSceneId;
+                    $changed = true;
+                    $sceneIdChanged = true;
+                }
+
+                // Write active_mode only when scene_id changed (mode transition)
+                // or other fields already changed (piggy-back). Prevents a
+                // "null → rgb" inference from triggering a save on an
+                // otherwise-unchanged bulb.
+                if ($reportedPilotMode !== null && $existing->active_mode !== $reportedPilotMode) {
+                    if ($sceneIdChanged || $changed) {
+                        $existing->active_mode = $reportedPilotMode;
                         $changed = true;
                     }
                 }
@@ -171,6 +212,16 @@ class BulbDiscovery implements ShouldQueue
                 $b->warmth_max_kelvin = $warmthMax;
                 $b->wiz_room_id = $wizRoomId;
                 $b->wiz_group_id = $wizGroupId;
+
+                // T024: scene_id and active_mode from pilot_state
+                if (isset($pilotState['sceneId'])) {
+                    $b->scene_id = $pilotState['sceneId'];
+                }
+                $pilotMode = ActiveMode::fromPilot($pilotState);
+                if ($pilotMode !== null) {
+                    $b->active_mode = $pilotMode;
+                }
+
                 $b->save();
             }
 

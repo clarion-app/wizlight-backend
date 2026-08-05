@@ -151,4 +151,43 @@ class CapabilityClassifierTest extends TestCase
             ],
         ];
     }
+
+    // ------------------------------------------------------------------
+    // detectDualHead() — DH in moduleName → dual-head device
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function detectDualHead_returns_true_for_dh_module()
+    {
+        $classifier = new CapabilityClassifier();
+        $this->assertTrue($classifier->detectDualHead('ESP01_DHRGB_03'), 'DH in moduleName should return true');
+    }
+
+    /** @test */
+    public function detectDualHead_returns_false_for_shrgb_module()
+    {
+        $classifier = new CapabilityClassifier();
+        $this->assertFalse($classifier->detectDualHead('ESP01_SHRGB_03'), 'SHRGB should return false');
+    }
+
+    /** @test */
+    public function detectDualHead_returns_false_for_shtw1_module()
+    {
+        $classifier = new CapabilityClassifier();
+        $this->assertFalse($classifier->detectDualHead('ESP03_SHTW1_01ABI'), 'SHTW1 should return false');
+    }
+
+    /** @test */
+    public function detectDualHead_returns_false_for_null_moduleName()
+    {
+        $classifier = new CapabilityClassifier();
+        $this->assertFalse($classifier->detectDualHead(null), 'null moduleName should return false');
+    }
+
+    /** @test */
+    public function detectDualHead_returns_false_for_empty_moduleName()
+    {
+        $classifier = new CapabilityClassifier();
+        $this->assertFalse($classifier->detectDualHead(''), 'empty moduleName should return false');
+    }
 }

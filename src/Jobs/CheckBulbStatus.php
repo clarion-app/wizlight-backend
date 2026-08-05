@@ -2,6 +2,7 @@
 
 namespace ClarionApp\WizlightBackend\Jobs;
 
+use ClarionApp\WizlightBackend\Mode\ActiveMode;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -87,17 +88,27 @@ class CheckBulbStatus implements ShouldQueue
      */
     private function reconcile(Bulb $bulb, array $payload): bool
     {
+        // When a scene is active, r/g/b in the payload represent the scene's
+        // current animation frame — NOT the user's intended colour. Skip them.
+        $sceneActive = isset($payload['sceneId']) && $payload['sceneId'] > 0;
+
         $reported = [
             'state' => isset($payload['state']) ? (bool) $payload['state'] : null,
             'dimming' => $payload['dimming'] ?? null,
-            'red' => $payload['r'] ?? 0,
-            'green' => $payload['g'] ?? 0,
-            'blue' => $payload['b'] ?? 0,
             'temperature' => $payload['temperature'] ?? null,
             // FR-010: signal is an independent trigger, not a passenger on
             // some other attribute happening to change at the same moment.
             'signal' => $payload['rssi'] ?? null,
         ];
+
+        // Only compare r/g/b when no scene is active. When a scene plays,
+        // the r/g/b values are the scene's internal frame colour, not the
+        // user-set colour stored in the model.
+        if (!$sceneActive) {
+            $reported['red'] = $payload['r'] ?? null;
+            $reported['green'] = $payload['g'] ?? null;
+            $reported['blue'] = $payload['b'] ?? null;
+        }
 
         $changed = false;
         foreach ($reported as $column => $value) {
@@ -113,6 +124,25 @@ class CheckBulbStatus implements ShouldQueue
             }
             if ($bulb->{$column} != $value) {
                 $bulb->{$column} = $value;
+                $changed = true;
+            }
+        }
+
+        // Write scene_id when it differs — scene changes are always meaningful.
+        $sceneIdChanged = false;
+        if (isset($payload['sceneId']) && $bulb->scene_id != $payload['sceneId']) {
+            $bulb->scene_id = $payload['sceneId'];
+            $changed = true;
+            $sceneIdChanged = true;
+        }
+
+        // Write active_mode only when scene_id changed (mode transition) or
+        // other fields already changed (piggy-back). Prevents "null → rgb"
+        // inference from triggering a save on an otherwise-unchanged bulb.
+        $pilotMode = ActiveMode::fromPilot($payload);
+        if ($pilotMode !== null && $bulb->active_mode !== $pilotMode) {
+            if ($sceneIdChanged || $changed) {
+                $bulb->active_mode = $pilotMode;
                 $changed = true;
             }
         }

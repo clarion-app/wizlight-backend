@@ -60,4 +60,22 @@ class CapabilityClassifier
 
         return CapabilityClass::DIM_ONLY;
     }
+
+    /**
+     * Detect whether a device is a dual-head fixture.
+     *
+     * Closed allowlist: only module names containing "DH" are considered
+     * dual-head. All other module names (including null/empty) return false.
+     *
+     * @param string|null $moduleName  e.g. "DH_01", "ESP01_SHRGB_03"
+     * @return bool True if the device is a dual-head fixture.
+     */
+    public static function detectDualHead(?string $moduleName): bool
+    {
+        if ($moduleName === null || $moduleName === '') {
+            return false;
+        }
+
+        return str_contains($moduleName, 'DH');
+    }
 }
