@@ -1,0 +1,384 @@
+<?php
+
+namespace ClarionApp\WizlightBackend\Tests\Unit;
+
+use PHPUnit\Framework\TestCase;
+use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
+use ClarionApp\WizlightBackend\Capability\CapabilityClass;
+use ClarionApp\WizlightBackend\Models\Bulb;
+use Illuminate\Validation\ValidationException;
+
+/**
+ * One rejection / acceptance case per FR.
+ * Uses PHPUnit mock builder to stub capability columns on Bulb.
+ */
+class DeviceCapabilityValidatorTest extends TestCase
+{
+    private function makeValidator(): DeviceCapabilityValidator
+    {
+        return new DeviceCapabilityValidator();
+    }
+
+    private function mockBulb(array $attrs): Bulb
+    {
+        $bulb = $this->getMockBuilder(Bulb::class)
+            ->onlyMethods(['getAttribute'])
+            ->getMock();
+
+        $storage = [
+            'id' => 'test-bulb-id',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+            'min_brightness_pct' => 1,
+        ];
+        foreach ($attrs as $k => $v) {
+            $storage[$k] = $v;
+        }
+
+        $bulb->method('getAttribute')->willReturnCallback(
+            fn ($key) => $storage[$key] ?? null
+        );
+
+        return $bulb;
+    }
+
+    // ------------------------------------------------------------------
+    // FR-008: Colour rejected on dim_only and tunable_white
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function fr008_colour_rejected_on_dim_only()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+    }
+
+    /** @test */
+    public function fr008_colour_rejected_on_tunable_white()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, [
+            'red' => 100,
+            'green' => 50,
+            'blue' => 25,
+        ]);
+    }
+
+    /** @test */
+    public function fr008_zero_colour_allowed_on_any_class()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        // No exception — all-zero RGB is not a colour request.
+        try {
+            $validator->validate($bulb, [
+                'red' => 0,
+                'green' => 0,
+                'blue' => 0,
+                'dimming' => 50,
+            ]);
+            $this->assertTrue(true, 'All-zero colour must not raise on a dim_only device.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // FR-009: Temperature out of range, and on dim_only
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function fr009_temperature_below_min_rejected()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['temperature' => 1800]);
+    }
+
+    /** @test */
+    public function fr009_temperature_above_max_rejected()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['temperature' => 7000]);
+    }
+
+    /** @test */
+    public function fr009_temperature_rejected_on_dim_only()
+    {
+        $bulb = $this->mockBulb(['capability_class' => CapabilityClass::DIM_ONLY]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['temperature' => 3000]);
+    }
+
+    // ------------------------------------------------------------------
+    // FR-010: Dimming below min_brightness_pct
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function fr010_dimming_below_min_rejected()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'min_brightness_pct' => 5,
+        ]);
+        $validator = $this->makeValidator();
+
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['dimming' => 2]);
+    }
+
+    /** @test */
+    public function fr010_dimming_zero_always_allowed()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::DIM_ONLY,
+            'min_brightness_pct' => 5,
+        ]);
+        $validator = $this->makeValidator();
+
+        // dimming === 0 means "off" — never rejected regardless of class or minimum.
+        try {
+            $validator->validate($bulb, ['dimming' => 0]);
+            $this->assertTrue(true, 'dimming=0 must never be rejected.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    /** @test */
+    public function fr010_dimming_at_min_accepted()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'min_brightness_pct' => 5,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['dimming' => 5]);
+            $this->assertTrue(true, 'dimming exactly at min_brightness_pct must be accepted.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // FR-013: Inclusive boundaries
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function fr013_temperature_exactly_at_min_accepted()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['temperature' => 2200]);
+            $this->assertTrue(true, 'Temperature exactly at warmth_min_kelvin must be accepted.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    /** @test */
+    public function fr013_temperature_exactly_at_max_accepted()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $validator = $this->makeValidator();
+
+        try {
+            $validator->validate($bulb, ['temperature' => 6500]);
+            $this->assertTrue(true, 'Temperature exactly at warmth_max_kelvin must be accepted.');
+        } catch (ValidationException $e) {
+            $this->fail('Unexpected ValidationException: '.$e->getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // filterForRoom: mixed-capability room (FR-016)
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function filterForRoom_returns_applicable_subset_per_bulb()
+    {
+        $validator = $this->makeValidator();
+
+        $validated = [
+            'state' => true,
+            'red' => 255,
+            'green' => 128,
+            'blue' => 0,
+            'temperature' => 4000,
+            'dimming' => 75,
+        ];
+
+        // Full-colour bulb: everything passes.
+        $fullColour = $this->mockBulb([
+            'id' => 'bulb-full-colour',
+            'capability_class' => CapabilityClass::FULL_COLOUR,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $skips = [];
+        $applicable = $validator->filterForRoom($fullColour, $validated, $skips);
+
+        $this->assertEquals($validated, $applicable);
+        $this->assertEmpty($skips);
+
+        // Tunable-white bulb: colour fields dropped.
+        $skips = [];
+        $tunableWhite = $this->mockBulb([
+            'id' => 'bulb-tunable-white',
+            'capability_class' => CapabilityClass::TUNABLE_WHITE,
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+        ]);
+        $applicable = $validator->filterForRoom($tunableWhite, $validated, $skips);
+
+        $this->assertArrayHasKey('state', $applicable);
+        $this->assertArrayHasKey('dimming', $applicable);
+        $this->assertArrayHasKey('temperature', $applicable);
+        $this->assertArrayNotHasKey('red', $applicable);
+        $this->assertArrayNotHasKey('green', $applicable);
+        $this->assertArrayNotHasKey('blue', $applicable);
+        // Three colour fields should be in skips.
+        $colourSkips = array_filter($skips, fn ($s) => in_array($s['field'], ['red', 'green', 'blue'], true));
+        $this->assertCount(3, $colourSkips);
+        foreach ($colourSkips as $skip) {
+            $this->assertSame('bulb-tunable-white', $skip['bulb_id']);
+        }
+
+        // Dim-only bulb: colour and temperature dropped.
+        $skips = [];
+        $dimOnly = $this->mockBulb([
+            'id' => 'bulb-dim-only',
+            'capability_class' => CapabilityClass::DIM_ONLY,
+        ]);
+        $applicable = $validator->filterForRoom($dimOnly, $validated, $skips);
+
+        $this->assertArrayHasKey('state', $applicable);
+        $this->assertArrayHasKey('dimming', $applicable);
+        $this->assertArrayNotHasKey('red', $applicable);
+        $this->assertArrayNotHasKey('green', $applicable);
+        $this->assertArrayNotHasKey('blue', $applicable);
+        $this->assertArrayNotHasKey('temperature', $applicable);
+        // Four fields should be in skips (red, green, blue, temperature).
+        $this->assertCount(4, $skips);
+        foreach ($skips as $skip) {
+            $this->assertSame('bulb-dim-only', $skip['bulb_id']);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // FR-014 fallback: null and corrupted capability_class
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function fr014_null_capability_class_rejects_colour_and_temperature()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => null,
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        // Colour rejected — null reads as dim_only.
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['red' => 255, 'green' => 0, 'blue' => 0]);
+    }
+
+    /** @test */
+    public function fr014_null_capability_class_rejects_temperature()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => null,
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        // Temperature rejected — null reads as dim_only (no range).
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['temperature' => 3000]);
+    }
+
+    /** @test */
+    public function fr014_corrupted_capability_class_rejects_identically()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => 'some_corrupted_string',
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        // Unrecognized string degrades to dim_only — colour rejected.
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['red' => 100, 'green' => 50, 'blue' => 25]);
+    }
+
+    /** @test */
+    public function fr014_corrupted_capability_class_rejects_temperature()
+    {
+        $bulb = $this->mockBulb([
+            'capability_class' => 'unknown_device_type',
+            'warmth_min_kelvin' => null,
+            'warmth_max_kelvin' => null,
+        ]);
+        $validator = $this->makeValidator();
+
+        // Unrecognized string — temperature rejected.
+        $this->expectException(ValidationException::class);
+
+        $validator->validate($bulb, ['temperature' => 4000]);
+    }
+}

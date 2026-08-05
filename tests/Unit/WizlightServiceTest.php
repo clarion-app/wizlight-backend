@@ -225,7 +225,8 @@ class WizlightServiceTest extends TestCase
         $room->expects($this->once())->method('save');
 
         $result = $service->updateRoomState($room, ['state' => true]);
-        $this->assertTrue($result->state);
+        $roomResult = is_array($result) ? $result['room'] : $result;
+        $this->assertTrue($roomResult->state);
     }
 
     /** @test */
@@ -285,7 +286,8 @@ class WizlightServiceTest extends TestCase
         $room->expects($this->once())->method('save');
 
         $result = $service->updateRoomState($room, ['red' => 100]);
-        $this->assertEquals(50, $result->dimming);
+        $roomResult = is_array($result) ? $result['room'] : $result;
+        $this->assertEquals(50, $roomResult->dimming);
     }
 
     /** @test */
@@ -299,7 +301,8 @@ class WizlightServiceTest extends TestCase
         $room->expects($this->once())->method('save');
 
         $result = $service->updateRoomState($room, ['state' => true]);
-        $this->assertTrue($result->state);
+        $roomResult = is_array($result) ? $result['room'] : $result;
+        $this->assertTrue($roomResult->state);
     }
 
     /** @test */
@@ -365,5 +368,160 @@ class WizlightServiceTest extends TestCase
         $command = $service->buildCommand($bulb);
 
         $this->assertEquals(42, $command->params->dimming);
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 4 (US2): Room capability filtering
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function updateRoomState_returns_capability_skips_when_fields_filtered()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        // Dim-only bulb: cannot accept colour or temperature.
+        $dimBulb = $this->makeBulbMock([
+            'state' => false,
+            'red' => 255,
+            'green' => 255,
+            'blue' => 255,
+            'dimming' => 100,
+            'temperature' => 2700,
+            'id' => 'bulb-dim-room',
+            'local_node_id' => 'other-node',
+            'capability_class' => 'dim_only',
+        ]);
+        $dimBulb->expects($this->once())->method('save');
+
+        // Full-colour bulb: accepts everything.
+        $fullBulb = $this->makeBulbMock([
+            'state' => false,
+            'red' => 255,
+            'green' => 255,
+            'blue' => 255,
+            'dimming' => 100,
+            'temperature' => 2700,
+            'id' => 'bulb-full-room',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.20',
+            'capability_class' => 'full_colour',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 6500,
+        ]);
+        $fullBulb->expects($this->once())->method('save');
+
+        $room = $this->makeRoomMock(
+            ['state' => false, 'red' => 255, 'green' => 255, 'blue' => 255, 'dimming' => 100, 'temperature' => 2700],
+            collect([$dimBulb, $fullBulb])
+        );
+        $room->expects($this->once())->method('save');
+
+        $result = $service->updateRoomState($room, [
+            'state' => true,
+            'red' => 200,
+            'green' => 100,
+            'blue' => 50,
+            'temperature' => 4000,
+            'dimming' => 75,
+        ]);
+
+        // The response should include capability_skips.
+        $this->assertIsArray($result);
+        $this->assertArrayHasKey('capability_skips', $result);
+        $skips = $result['capability_skips'];
+        // Dim-only bulb should have skips for red, green, blue, temperature.
+        $dimSkips = array_filter($skips, fn ($s) => $s['bulb_id'] === 'bulb-dim-room');
+        $this->assertCount(4, $dimSkips);
+        // Full-colour bulb should have zero skips.
+        $fullSkips = array_filter($skips, fn ($s) => $s['bulb_id'] === 'bulb-full-room');
+        $this->assertCount(0, $fullSkips);
+    }
+
+    /** @test */
+    public function updateRoomState_skips_bulb_with_zero_applicable_fields()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        // Dim-only bulb: a colour-only command has zero applicable fields.
+        $dimBulb = $this->makeBulbMock([
+            'state' => false,
+            'red' => 255,
+            'green' => 255,
+            'blue' => 255,
+            'dimming' => 100,
+            'temperature' => 2700,
+            'id' => 'bulb-skip-room',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.30',
+            'capability_class' => 'dim_only',
+        ]);
+        // Because all fields are filtered out, save should NOT be called.
+        $dimBulb->expects($this->never())->method('save');
+
+        $room = $this->makeRoomMock(
+            ['state' => false, 'red' => 255, 'green' => 255, 'blue' => 255, 'dimming' => 100, 'temperature' => 2700],
+            collect([$dimBulb])
+        );
+        $room->expects($this->once())->method('save');
+
+        $service->updateRoomState($room, [
+            'red' => 200,
+            'green' => 100,
+            'blue' => 50,
+        ]);
+
+        // No command dispatched for the skipped bulb.
+        Bus::assertNotDispatched(SendBulbCommand::class);
+        Event::assertNotDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function updateRoomState_preserves_room_aggregate_row_unchanged()
+    {
+        Bus::fake();
+        Event::fake();
+        $service = new WizlightService();
+
+        // Dim-only bulb in room.
+        $dimBulb = $this->makeBulbMock([
+            'state' => false,
+            'red' => 255,
+            'green' => 255,
+            'blue' => 255,
+            'dimming' => 100,
+            'temperature' => 2700,
+            'id' => 'bulb-agg-room',
+            'local_node_id' => 'other-node',
+            'capability_class' => 'dim_only',
+        ]);
+
+        $room = $this->makeRoomMock(
+            ['state' => false, 'red' => 255, 'green' => 255, 'blue' => 255, 'dimming' => 100, 'temperature' => 2700],
+            collect([$dimBulb])
+        );
+        $room->expects($this->once())->method('save');
+
+        $result = $service->updateRoomState($room, [
+            'state' => true,
+            'red' => 200,
+            'green' => 100,
+            'blue' => 50,
+            'temperature' => 4000,
+            'dimming' => 75,
+        ]);
+
+        // The room's aggregate row should still record the full requested state,
+        // even though the dim-only bulb can't accept colour or temperature.
+        $roomResult = is_array($result) ? $result['room'] : $result;
+        $this->assertTrue($roomResult->state);
+        $this->assertEquals(200, $roomResult->red);
+        $this->assertEquals(100, $roomResult->green);
+        $this->assertEquals(50, $roomResult->blue);
+        $this->assertEquals(4000, $roomResult->temperature);
+        $this->assertEquals(75, $roomResult->dimming);
     }
 }

@@ -69,7 +69,15 @@ class RoomController extends Controller
             return response()->json(['message' => 'Room not found'], 404);
         }
 
-        return $this->service->updateRoomState($room, $validated);
+        // WizlightService::updateRoomState() returns {room, capability_skips}
+        // (Phase 4, US2/FR-016) — unwrap it here so callers keep getting the
+        // Room model itself (unchanged shape/property access), with
+        // capability_skips folded in as an extra attribute for JSON responses.
+        $result = $this->service->updateRoomState($room, $validated);
+        $room = $result['room'];
+        $room->setAttribute('capability_skips', $result['capability_skips']);
+
+        return $room;
     }
 
     /**

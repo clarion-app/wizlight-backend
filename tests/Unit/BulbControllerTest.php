@@ -52,6 +52,11 @@ class BulbControllerTest extends TestCase
             'dimming' => 50,
             'temperature' => 2700,
             'local_node_id' => 'other-node',
+            // Pre-Phase-4 tests in this file predate capability awareness and
+            // exercise unrestricted state/colour/dimming changes — default to
+            // full_colour so they keep testing what they always tested. Tests
+            // that care about capability gating override this explicitly.
+            'capability_class' => 'full_colour',
         ];
         $data = array_merge($defaults, $attrs);
         return Bulb::create($data);
@@ -283,5 +288,165 @@ class BulbControllerTest extends TestCase
         $response = $controller->destroy('nonexistent-id');
 
         $this->assertEquals(404, $response->status());
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 4 (US2): Device capability validation in controller
+    // ------------------------------------------------------------------
+
+    /** @test */
+    public function update_rejects_colour_on_dim_only_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'dim_only',
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('red', $errors);
+            $this->assertArrayHasKey('green', $errors);
+            $this->assertArrayHasKey('blue', $errors);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_rejects_temperature_on_dim_only_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'dim_only',
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'temperature' => 3000,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('temperature', $errors);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_rejects_temperature_out_of_range()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'tunable_white',
+            'warmth_min_kelvin' => 2200,
+            'warmth_max_kelvin' => 5000,
+            'local_node_id' => 'test-node-id',
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'temperature' => 1800,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            $errors = $e->errors();
+            $this->assertArrayHasKey('temperature', $errors);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_rejection_prevents_service_call_and_dispatch()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'dim_only',
+            'local_node_id' => 'test-node-id',
+            'ip' => '192.168.1.10',
+            'state' => false,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'red' => 255,
+            'green' => 0,
+            'blue' => 0,
+        ]);
+
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+
+        try {
+            $controller->update($request, (string) $bulb->id);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            // Because the request is rejected at the validation layer,
+            // no command should be dispatched and no event should fire.
+            Bus::assertNotDispatched(SendBulbCommand::class);
+            Event::assertNotDispatched(BulbStatusEvent::class);
+            throw $e;
+        }
+    }
+
+    /** @test */
+    public function update_accepts_dimming_zero_on_any_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'dim_only',
+            'min_brightness_pct' => 5,
+            'local_node_id' => 'test-node-id',
+            'dimming' => 50,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'dimming' => 0,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
+
+        $this->assertEquals(0, $result->dimming);
+        Bus::assertDispatched(SendBulbCommand::class);
+        Event::assertDispatched(BulbStatusEvent::class);
+    }
+
+    /** @test */
+    public function update_accepts_dim_on_dim_only_bulb()
+    {
+        $bulb = $this->createBulb([
+            'capability_class' => 'dim_only',
+            'local_node_id' => 'test-node-id',
+            'dimming' => 100,
+        ]);
+
+        $controller = $this->makeController();
+
+        $request = Request::create('/', 'PUT', [
+            'dimming' => 50,
+        ]);
+
+        $result = $controller->update($request, (string) $bulb->id);
+
+        $this->assertEquals(50, $result->dimming);
+        Bus::assertDispatched(SendBulbCommand::class);
     }
 }

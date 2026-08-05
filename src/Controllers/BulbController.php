@@ -2,6 +2,7 @@
 
 namespace ClarionApp\WizlightBackend\Controllers;
 
+use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -45,6 +46,9 @@ class BulbController extends Controller
         if(!$bulb) {
             return response()->json(['message' => 'Bulb not found'], 404);
         }
+
+        // Validate against device capability (Phase 4, US2).
+        (new DeviceCapabilityValidator())->validate($bulb, $validated);
 
         return $this->service->updateBulbState($bulb, $validated);
     }

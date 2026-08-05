@@ -2,6 +2,7 @@
 
 namespace ClarionApp\WizlightBackend\Services;
 
+use ClarionApp\WizlightBackend\Capability\DeviceCapabilityValidator;
 use ClarionApp\WizlightBackend\Models\Bulb;
 use ClarionApp\WizlightBackend\Models\Room;
 use ClarionApp\WizlightBackend\Events\BulbStatusEvent;
@@ -72,7 +73,12 @@ class WizlightService
         return $bulb;
     }
 
-    public function updateRoomState(Room $room, array $validated): Room
+    /**
+     * Update room aggregate row and fan out to member bulbs.
+     *
+     * @return array{room: Room, capability_skips: array[]}
+     */
+    public function updateRoomState(Room $room, array $validated): array
     {
         $update = false;
 
@@ -119,40 +125,51 @@ class WizlightService
         }
 
         if ($room->bulbs->isEmpty()) {
-            return $room;
+            return ['room' => $room, 'capability_skips' => []];
         }
 
         $bulbUpdate = false;
+        $skips = [];
+        $validator = new DeviceCapabilityValidator();
+
         foreach ($room->bulbs as $bulb) {
+            // Filter validated payload for this bulb's capability class.
+            $applicable = $validator->filterForRoom($bulb, $validated, $skips);
+
+            // Skip entirely if nothing applicable remains.
+            if (empty($applicable)) {
+                continue;
+            }
+
             $bulbChanged = false;
 
-            if (isset($validated['state']) && $bulb->state != $validated['state']) {
-                $bulb->state = $validated['state'];
+            if (isset($applicable['state']) && $bulb->state != $applicable['state']) {
+                $bulb->state = $applicable['state'];
                 $bulbChanged = true;
             }
 
-            if (isset($validated['red']) && $bulb->red != $validated['red']) {
-                $bulb->red = $validated['red'];
+            if (isset($applicable['red']) && $bulb->red != $applicable['red']) {
+                $bulb->red = $applicable['red'];
                 $bulbChanged = true;
             }
 
-            if (isset($validated['green']) && $bulb->green != $validated['green']) {
-                $bulb->green = $validated['green'];
+            if (isset($applicable['green']) && $bulb->green != $applicable['green']) {
+                $bulb->green = $applicable['green'];
                 $bulbChanged = true;
             }
 
-            if (isset($validated['blue']) && $bulb->blue != $validated['blue']) {
-                $bulb->blue = $validated['blue'];
+            if (isset($applicable['blue']) && $bulb->blue != $applicable['blue']) {
+                $bulb->blue = $applicable['blue'];
                 $bulbChanged = true;
             }
 
-            if (isset($validated['temperature']) && $bulb->temperature != $validated['temperature']) {
-                $bulb->temperature = $validated['temperature'];
+            if (isset($applicable['temperature']) && $bulb->temperature != $applicable['temperature']) {
+                $bulb->temperature = $applicable['temperature'];
                 $bulbChanged = true;
             }
 
-            if (isset($validated['dimming']) && $bulb->dimming != $validated['dimming']) {
-                $bulb->dimming = $validated['dimming'];
+            if (isset($applicable['dimming']) && $bulb->dimming != $applicable['dimming']) {
+                $bulb->dimming = $applicable['dimming'];
                 $bulbChanged = true;
             }
 
@@ -169,7 +186,7 @@ class WizlightService
             }
         }
 
-        return $room;
+        return ['room' => $room, 'capability_skips' => $skips];
     }
 
     public function buildCommand(object $bulb): object
